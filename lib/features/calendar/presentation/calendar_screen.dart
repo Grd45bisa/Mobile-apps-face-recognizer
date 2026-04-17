@@ -1,0 +1,2288 @@
+import 'package:flutter/material.dart';
+import 'package:table_calendar/table_calendar.dart';
+import '../../../shared/theme/app_colors.dart';
+import '../../../shared/models/app_models.dart';
+import '../../../shared/store/app_store.dart';
+import '../../../shared/services/notification_service.dart';
+
+class CalendarScreen extends StatefulWidget {
+  const CalendarScreen({super.key});
+
+  @override
+  State<CalendarScreen> createState() => _CalendarScreenState();
+}
+
+class _CalendarScreenState extends State<CalendarScreen> {
+  DateTime _focusedDay = DateTime.now();
+  DateTime _selectedDay = DateTime(
+    DateTime.now().year,
+    DateTime.now().month,
+    DateTime.now().day,
+  );
+  CalendarFormat _calendarFormat = CalendarFormat.month;
+
+  final _store = AppStore.instance;
+
+  // ─── STATUS STYLES ────────────────────────────────────────────────────────
+
+  _StatusStyle _attendanceStyle(AttendanceStatus s) {
+    switch (s) {
+      case AttendanceStatus.present:
+        return const _StatusStyle(
+          label: 'Hadir',
+          icon: Icons.check_rounded,
+          color: AppColors.success,
+          bg: AppColors.successLight,
+        );
+      case AttendanceStatus.leave:
+        return const _StatusStyle(
+          label: 'Cuti',
+          icon: Icons.beach_access_rounded,
+          color: Color(0xFF3B82F6),
+          bg: Color(0xFFEFF6FF),
+        );
+      case AttendanceStatus.sick:
+        return const _StatusStyle(
+          label: 'Sakit',
+          icon: Icons.healing_rounded,
+          color: Color(0xFFDB2777),
+          bg: Color(0xFFFDF2F8),
+        );
+      case AttendanceStatus.training:
+        return const _StatusStyle(
+          label: 'Training',
+          icon: Icons.school_rounded,
+          color: Color(0xFF0D9488),
+          bg: Color(0xFFF0FDFA),
+        );
+      case AttendanceStatus.meeting:
+        return const _StatusStyle(
+          label: 'Meeting',
+          icon: Icons.groups_rounded,
+          color: Color(0xFF7C3AED),
+          bg: Color(0xFFF5F3FF),
+        );
+      case AttendanceStatus.holiday:
+        return const _StatusStyle(
+          label: 'Libur',
+          icon: Icons.celebration_rounded,
+          color: Color(0xFFF97316),
+          bg: Color(0xFFFFF7ED),
+        );
+      case AttendanceStatus.otherException:
+        return const _StatusStyle(
+          label: 'Lainnya',
+          icon: Icons.info_outline_rounded,
+          color: Color(0xFF6366F1),
+          bg: Color(0xFFEEF2FF),
+        );
+    }
+  }
+
+  _DayCellStyle _dayCellStyle(DayDisplayState state, AttendanceStatus? status) {
+    switch (state) {
+      case DayDisplayState.presentWorkday:
+        return const _DayCellStyle(
+          bg: AppColors.successLight,
+          border: AppColors.success,
+          text: AppColors.success,
+          icon: Icons.check_rounded,
+        );
+      case DayDisplayState.workedOnOffDay:
+        return const _DayCellStyle(
+          bg: AppColors.successLight,
+          border: AppColors.success,
+          text: AppColors.success,
+          icon: Icons.check_rounded,
+          extraLabel: 'Libur',
+        );
+      case DayDisplayState.offDay:
+        return const _DayCellStyle(
+          bg: AppColors.errorLight,
+          border: AppColors.error,
+          text: AppColors.error,
+          icon: Icons.weekend_rounded,
+        );
+      case DayDisplayState.missingAttendance:
+        return const _DayCellStyle(
+          bg: AppColors.missingLight,
+          border: AppColors.missing,
+          text: AppColors.missing,
+          icon: Icons.warning_amber_rounded,
+        );
+      case DayDisplayState.manualException:
+        if (status != null) {
+          final s = _attendanceStyle(status);
+          return _DayCellStyle(
+            bg: s.bg,
+            border: s.color,
+            text: s.color,
+            icon: s.icon,
+          );
+        }
+        return const _DayCellStyle(
+          bg: Color(0xFFEFF6FF),
+          border: Color(0xFF3B82F6),
+          text: Color(0xFF3B82F6),
+          icon: Icons.edit_calendar_rounded,
+        );
+      case DayDisplayState.futureDay:
+        return const _DayCellStyle(
+          bg: Color(0xFFF3F4F6),
+          border: Color(0xFFE5E7EB),
+          text: Color(0xFF9CA3AF),
+          icon: null,
+        );
+    }
+  }
+
+  // ─── BUILD ────────────────────────────────────────────────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      appBar: AppBar(
+        backgroundColor: AppColors.surface,
+        elevation: 0,
+        automaticallyImplyLeading: false,
+        title: const Text(
+          'Kalender',
+          style: TextStyle(
+            color: AppColors.textPrimary,
+            fontWeight: FontWeight.bold,
+            fontSize: 16,
+          ),
+        ),
+        actions: [
+          IconButton(
+            tooltip: 'Ke hari ini',
+            splashRadius: 20,
+            padding: const EdgeInsets.all(8),
+            constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+            onPressed: () {
+              final now = DateTime.now();
+              setState(() {
+                _focusedDay = now;
+                _selectedDay = DateTime(now.year, now.month, now.day);
+              });
+            },
+            icon: const Icon(Icons.today_rounded, color: AppColors.textPrimary),
+          ),
+          IconButton(
+            tooltip: 'Pengaturan hari libur',
+            splashRadius: 20,
+            padding: const EdgeInsets.all(8),
+            constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+            onPressed: _showOffDaySettings,
+            icon: const Icon(
+              Icons.settings_rounded,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(width: 4),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        heroTag: 'cal-reminder',
+        onPressed: () => _showReminderSheet(date: _selectedDay),
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
+        elevation: 2,
+        icon: const Icon(Icons.notifications_active_rounded, size: 18),
+        label: const Text(
+          'Pengingat',
+          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+        ),
+      ),
+      body: ListenableBuilder(
+        listenable: _store,
+        builder: (context, _) {
+          return ListView(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 100),
+            children: [
+              _buildMonthSummary(),
+              const SizedBox(height: 12),
+              _buildCalendarCard(),
+              const SizedBox(height: 12),
+              _buildLegend(),
+              const SizedBox(height: 12),
+              _buildDayDetail(),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  // ─── MONTH SUMMARY ────────────────────────────────────────────────────────
+
+  Widget _buildMonthSummary() {
+    final stats = _store.monthStatsOf(_focusedDay);
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          _summaryCell(
+            'Hadir',
+            stats.present.toString(),
+            AppColors.success,
+            Icons.check_circle_rounded,
+          ),
+          _vDivider(),
+          _summaryCell(
+            'Absen',
+            stats.missing.toString(),
+            AppColors.missing,
+            Icons.warning_amber_rounded,
+          ),
+          _vDivider(),
+          _summaryCell(
+            'Libur',
+            stats.offDay.toString(),
+            AppColors.error,
+            Icons.weekend_rounded,
+          ),
+          _vDivider(),
+          _summaryCell(
+            'Pengingat',
+            stats.reminders.toString(),
+            AppColors.primary,
+            Icons.notifications_rounded,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _vDivider() =>
+      Container(width: 1, height: 36, color: AppColors.border);
+
+  Widget _summaryCell(String label, String value, Color color, IconData icon) {
+    return Expanded(
+      child: Column(
+        children: [
+          Icon(icon, color: color, size: 18),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 16,
+              color: color,
+            ),
+          ),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 11,
+              color: AppColors.textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ─── CALENDAR CARD ────────────────────────────────────────────────────────
+
+  Widget _buildCalendarCard() {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border),
+      ),
+      padding: const EdgeInsets.all(8),
+      child: TableCalendar(
+        firstDay: DateTime(2024),
+        lastDay: DateTime(2030),
+        focusedDay: _focusedDay,
+        selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+        calendarFormat: _calendarFormat,
+        availableCalendarFormats: const {
+          CalendarFormat.month: 'Bulan',
+          CalendarFormat.twoWeeks: '2 Mgg',
+          CalendarFormat.week: 'Mgg',
+        },
+        onFormatChanged: (f) => setState(() => _calendarFormat = f),
+        onDaySelected: (selected, focused) {
+          setState(() {
+            _selectedDay = selected;
+            _focusedDay = focused;
+          });
+        },
+        onPageChanged: (focused) => setState(() => _focusedDay = focused),
+        startingDayOfWeek: StartingDayOfWeek.monday,
+        headerStyle: const HeaderStyle(
+          titleCentered: true,
+          formatButtonDecoration: BoxDecoration(
+            color: AppColors.primaryLight,
+            borderRadius: BorderRadius.all(Radius.circular(20)),
+          ),
+          formatButtonTextStyle: TextStyle(
+            color: AppColors.primary,
+            fontWeight: FontWeight.w600,
+            fontSize: 11,
+          ),
+          formatButtonShowsNext: false,
+          titleTextStyle: TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 15,
+            color: AppColors.textPrimary,
+          ),
+          leftChevronIcon: Icon(
+            Icons.chevron_left_rounded,
+            color: AppColors.primary,
+          ),
+          rightChevronIcon: Icon(
+            Icons.chevron_right_rounded,
+            color: AppColors.primary,
+          ),
+          headerPadding: EdgeInsets.symmetric(vertical: 6),
+        ),
+        daysOfWeekStyle: const DaysOfWeekStyle(
+          weekdayStyle: TextStyle(
+            color: AppColors.textSecondary,
+            fontWeight: FontWeight.w600,
+            fontSize: 12,
+          ),
+          weekendStyle: TextStyle(
+            color: AppColors.textSecondary,
+            fontWeight: FontWeight.w600,
+            fontSize: 12,
+          ),
+        ),
+        calendarStyle: const CalendarStyle(
+          outsideDaysVisible: false,
+          cellMargin: EdgeInsets.all(3),
+        ),
+        calendarBuilders: CalendarBuilders(
+          defaultBuilder: (ctx, day, _) => _buildDayCell(day),
+          todayBuilder: (ctx, day, _) => _buildDayCell(day, isToday: true),
+          selectedBuilder: (ctx, day, _) =>
+              _buildDayCell(day, isSelected: true),
+          outsideBuilder: (ctx, day, _) => const SizedBox(),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDayCell(
+    DateTime day, {
+    bool isToday = false,
+    bool isSelected = false,
+  }) {
+    final state = _store.dayStateOf(day);
+    final record = _store.attendanceOf(day);
+    final cellStyle = _dayCellStyle(state, record?.status);
+    final reminderCount = _store.remindersOf(day).length;
+    final worklogCount = _store.worklogsOf(day).length;
+
+    return Container(
+      margin: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: isSelected ? AppColors.primary : cellStyle.bg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: isSelected
+              ? AppColors.primary
+              : isToday
+              ? AppColors.primary
+              : cellStyle.border,
+          width: isToday && !isSelected ? 1.8 : 1,
+        ),
+      ),
+      child: Stack(
+        children: [
+          // Day number
+          Center(
+            child: Text(
+              '${day.day}',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: isToday || isSelected
+                    ? FontWeight.bold
+                    : FontWeight.w500,
+                color: isSelected ? Colors.white : cellStyle.text,
+              ),
+            ),
+          ),
+
+          // Status icon (bottom center)
+          if (cellStyle.icon != null && !isSelected)
+            Positioned(
+              bottom: 2,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Icon(cellStyle.icon, size: 9, color: cellStyle.border),
+              ),
+            ),
+
+          // Reminder badge (top-right)
+          if (reminderCount > 0)
+            Positioned(
+              top: 1,
+              right: 1,
+              child: Container(
+                width: 13,
+                height: 13,
+                decoration: BoxDecoration(
+                  color: isSelected ? Colors.white24 : AppColors.primary,
+                  borderRadius: BorderRadius.circular(7),
+                ),
+                child: Center(
+                  child: Text(
+                    '$reminderCount',
+                    style: TextStyle(
+                      fontSize: 8,
+                      fontWeight: FontWeight.bold,
+                      color: isSelected ? Colors.white : Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+          // Worklog dots (bottom-left)
+          if (worklogCount > 0 && !isSelected)
+            Positioned(
+              bottom: 2,
+              left: 3,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: List.generate(
+                  worklogCount.clamp(0, 3),
+                  (i) => Container(
+                    width: 4,
+                    height: 4,
+                    margin: const EdgeInsets.only(right: 1.5),
+                    decoration: const BoxDecoration(
+                      color: AppColors.primary,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // ─── LEGEND ───────────────────────────────────────────────────────────────
+
+  Widget _buildLegend() {
+    final items = [
+      (color: AppColors.success, bg: AppColors.successLight, label: 'Hadir'),
+      (color: AppColors.error, bg: AppColors.errorLight, label: 'Libur'),
+      (color: AppColors.missing, bg: AppColors.missingLight, label: 'Absen'),
+      (
+        color: const Color(0xFF3B82F6),
+        bg: const Color(0xFFEFF6FF),
+        label: 'Pengecualian',
+      ),
+      (
+        color: AppColors.textSecondary,
+        bg: const Color(0xFFF3F4F6),
+        label: 'Mendatang',
+      ),
+    ];
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Wrap(
+        spacing: 10,
+        runSpacing: 6,
+        children: items.map((item) {
+          return Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 12,
+                height: 12,
+                decoration: BoxDecoration(
+                  color: item.bg,
+                  borderRadius: BorderRadius.circular(3),
+                  border: Border.all(color: item.color, width: 1.2),
+                ),
+              ),
+              const SizedBox(width: 5),
+              Text(
+                item.label,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: AppColors.textSecondary,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  // ─── DAY DETAIL ───────────────────────────────────────────────────────────
+
+  Widget _buildDayDetail() {
+    final day = _selectedDay;
+    final record = _store.attendanceOf(day);
+    final worklogs = _store.worklogsOf(day);
+    final reminders = _store.remindersOf(day);
+    final state = _store.dayStateOf(day);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.calendar_today_rounded,
+                  size: 14,
+                  color: AppColors.textSecondary,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  _dateFull(day),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                const Spacer(),
+                if (state == DayDisplayState.workedOnOffDay)
+                  _chip(
+                    'Masuk saat libur',
+                    AppColors.success,
+                    AppColors.successLight,
+                  ),
+                if (state == DayDisplayState.missingAttendance)
+                  _chip(
+                    'Belum absen',
+                    AppColors.missing,
+                    AppColors.missingLight,
+                  ),
+              ],
+            ),
+          ),
+          const Divider(height: 1, color: AppColors.border),
+
+          // Attendance section
+          _buildAttendanceSection(record, state, day),
+
+          // Worklog section
+          if (worklogs.isNotEmpty) ...[
+            const Divider(height: 1, color: AppColors.border),
+            _buildWorklogSection(worklogs),
+          ],
+
+          // Reminder section
+          if (reminders.isNotEmpty) ...[
+            const Divider(height: 1, color: AppColors.border),
+            _buildReminderSection(reminders),
+          ],
+
+          const Divider(height: 1, color: AppColors.border),
+
+          // Action row
+          _buildActionRow(record, day),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAttendanceSection(
+    AttendanceRecord? record,
+    DayDisplayState state,
+    DateTime day,
+  ) {
+    if (record == null) {
+      return Padding(
+        padding: const EdgeInsets.all(16),
+        child: _buildEmptyAttendance(state, day),
+      );
+    }
+
+    final style = _attendanceStyle(record.status);
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(9),
+                decoration: BoxDecoration(
+                  color: style.bg,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(style.icon, color: style.color, size: 18),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      style.label,
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                        color: style.color,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: record.source == AttendanceSource.face
+                                ? AppColors.primaryLight
+                                : AppColors.warningLight,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            record.source == AttendanceSource.face
+                                ? 'Face'
+                                : 'Manual',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: record.source == AttendanceSource.face
+                                  ? AppColors.primary
+                                  : AppColors.warning,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (record.checkIn != null || record.checkOut != null) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                if (record.checkIn != null)
+                  Expanded(
+                    child: _timeChip(
+                      Icons.login_rounded,
+                      'Check-in',
+                      _fmtTod(record.checkIn!),
+                      AppColors.success,
+                    ),
+                  ),
+                if (record.checkIn != null && record.checkOut != null)
+                  const SizedBox(width: 10),
+                if (record.checkOut != null)
+                  Expanded(
+                    child: _timeChip(
+                      Icons.logout_rounded,
+                      'Check-out',
+                      _fmtTod(record.checkOut!),
+                      AppColors.error,
+                    ),
+                  ),
+              ],
+            ),
+            if (record.checkIn != null && record.checkOut != null) ...[
+              const SizedBox(height: 8),
+              _timeChip(
+                Icons.schedule_rounded,
+                'Total jam',
+                _durationBetween(record.checkIn!, record.checkOut!),
+                AppColors.primary,
+                full: true,
+              ),
+            ],
+          ],
+          if (record.note != null && record.note!.trim().isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppColors.background,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppColors.border),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(
+                    Icons.notes_rounded,
+                    size: 14,
+                    color: AppColors.textSecondary,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      record.note!,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyAttendance(DayDisplayState state, DateTime day) {
+    final isFuture = state == DayDisplayState.futureDay;
+    final isMissing = state == DayDisplayState.missingAttendance;
+    final isOffDay = state == DayDisplayState.offDay;
+
+    String message;
+    IconData icon;
+    Color color;
+
+    if (isFuture) {
+      message = 'Hari mendatang';
+      icon = Icons.calendar_today_rounded;
+      color = AppColors.textSecondary;
+    } else if (isOffDay) {
+      message = 'Hari libur – tidak ada presensi';
+      icon = Icons.weekend_rounded;
+      color = AppColors.error;
+    } else if (isMissing) {
+      message = 'Tidak ada presensi pada hari kerja ini';
+      icon = Icons.warning_amber_rounded;
+      color = AppColors.missing;
+    } else {
+      message = 'Belum ada data presensi';
+      icon = Icons.hourglass_empty_rounded;
+      color = AppColors.textSecondary;
+    }
+
+    return Row(
+      children: [
+        Icon(icon, size: 18, color: color),
+        const SizedBox(width: 10),
+        Text(
+          message,
+          style: TextStyle(
+            fontSize: 13,
+            color: color,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildWorklogSection(List<WorklogEntry> worklogs) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.work_history_rounded,
+                size: 13,
+                color: AppColors.textSecondary,
+              ),
+              const SizedBox(width: 5),
+              const Text(
+                'Aktivitas Kerja',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '${worklogs.length} entri',
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ...worklogs.map((wl) => _buildWorklogItem(wl)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWorklogItem(WorklogEntry wl) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(
+              color: wl.projectColor,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  wl.taskName,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12,
+                    color: AppColors.textPrimary,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                Text(
+                  '${wl.projectName}  ·  ${wl.startTime != null ? _fmtTod(wl.startTime!) : '--'} - ${wl.endTime != null ? _fmtTod(wl.endTime!) : '--'}',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Text(
+            wl.duration,
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+              color: AppColors.textPrimary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReminderSection(List<ReminderEvent> reminders) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.notifications_rounded,
+                size: 13,
+                color: AppColors.textSecondary,
+              ),
+              const SizedBox(width: 5),
+              const Text(
+                'Pengingat',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '${reminders.length} acara',
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ...reminders.map((r) => _buildReminderItem(r)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReminderItem(ReminderEvent r) {
+    final start = r.isAllDay
+        ? 'Seharian'
+        : '${_fmtDt(r.startDateTime)}${r.endDateTime != null ? ' - ${_fmtDt(r.endDateTime!)}' : ''}';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              width: 3,
+              decoration: const BoxDecoration(
+                color: AppColors.primary,
+                borderRadius: BorderRadius.only(
+                  topLeft: Radius.circular(8),
+                  bottomLeft: Radius.circular(8),
+                ),
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            r.title,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 12,
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                        ),
+                        GestureDetector(
+                          onTap: () {
+                            _store.removeReminder(r);
+                            NotificationService.instance.cancelReminder(r);
+                          },
+                          child: const Icon(
+                            Icons.close_rounded,
+                            size: 14,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      start,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    if (r.description != null && r.description!.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        r.description!,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppColors.textSecondary,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 4,
+                      children: r.reminderOffsetsInMinutes.map((m) {
+                        return Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.primaryLight,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            '$m mnt',
+                            style: const TextStyle(
+                              fontSize: 9,
+                              color: AppColors.primary,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildActionRow(AttendanceRecord? record, DateTime day) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+      child: Row(
+        children: [
+          if (record != null) ...[
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () => _confirmDelete(day),
+                icon: const Icon(Icons.delete_outline_rounded, size: 16),
+                label: const Text('Hapus'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.error,
+                  side: const BorderSide(color: AppColors.error),
+                  padding: const EdgeInsets.symmetric(vertical: 11),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 2,
+              child: ElevatedButton.icon(
+                onPressed: () =>
+                    _showManualEntryModal(preselected: day, existing: record),
+                icon: const Icon(Icons.edit_rounded, size: 16),
+                label: const Text('Edit Presensi'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(vertical: 11),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+            ),
+          ] else ...[
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () => _showQuickActionModal(day),
+                icon: const Icon(Icons.add_rounded, size: 16),
+                label: const Text('Tandai Cepat'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.primary,
+                  side: const BorderSide(color: AppColors.primary),
+                  padding: const EdgeInsets.symmetric(vertical: 11),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: () => _showManualEntryModal(preselected: day),
+                icon: const Icon(Icons.edit_calendar_rounded, size: 16),
+                label: const Text('Input Manual'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(vertical: 11),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // ─── QUICK ACTION MODAL ───────────────────────────────────────────────────
+
+  void _showQuickActionModal(DateTime date) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _sheetHandle(),
+              const SizedBox(height: 16),
+              Text(
+                'Tandai ${_dateFull(date)}',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Pilih status kehadiran',
+                style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+              ),
+              const SizedBox(height: 16),
+              _quickTile(
+                AttendanceStatus.leave,
+                subtitle: 'Cuti tahunan, izin pribadi, dll.',
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _markAttendance(date, AttendanceStatus.leave);
+                },
+              ),
+              const SizedBox(height: 8),
+              _quickTile(
+                AttendanceStatus.sick,
+                subtitle: 'Sakit dengan/tanpa surat dokter.',
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _markAttendance(date, AttendanceStatus.sick);
+                },
+              ),
+              const SizedBox(height: 8),
+              _quickTile(
+                AttendanceStatus.holiday,
+                subtitle: 'Libur nasional / event perusahaan.',
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _markAttendance(date, AttendanceStatus.holiday);
+                },
+              ),
+              const SizedBox(height: 12),
+              InkWell(
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showManualEntryModal(preselected: date);
+                },
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.primaryLight,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(
+                        Icons.edit_calendar_rounded,
+                        color: AppColors.primary,
+                        size: 20,
+                      ),
+                      SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Input Manual (form lengkap)',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                      ),
+                      Icon(
+                        Icons.chevron_right_rounded,
+                        color: AppColors.primary,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.textSecondary,
+                  ),
+                  child: const Text(
+                    'Batal',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _quickTile(
+    AttendanceStatus status, {
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    final s = _attendanceStyle(status);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: s.bg,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(s.icon, color: s.color, size: 20),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Tandai ${s.label}',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(
+              Icons.chevron_right_rounded,
+              color: AppColors.textSecondary,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ─── MANUAL ENTRY MODAL ───────────────────────────────────────────────────
+
+  void _showManualEntryModal({
+    DateTime? preselected,
+    AttendanceRecord? existing,
+  }) {
+    DateTime date = preselected ?? existing?.date ?? DateTime.now();
+    AttendanceStatus status = existing?.status ?? AttendanceStatus.present;
+    TimeOfDay? checkIn = existing?.checkIn;
+    TimeOfDay? checkOut = existing?.checkOut;
+    final notesCtrl = TextEditingController(text: existing?.note ?? '');
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) {
+          final needsTime = status == AttendanceStatus.present;
+          return Padding(
+            padding: EdgeInsets.only(
+              top: 12,
+              left: 20,
+              right: 20,
+              bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _sheetHandle(),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: AppColors.primaryLight,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(
+                          Icons.edit_calendar_rounded,
+                          color: AppColors.primary,
+                          size: 20,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        existing == null
+                            ? 'Input Manual Absensi'
+                            : 'Edit Absensi',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  _label('Tanggal'),
+                  const SizedBox(height: 6),
+                  InkWell(
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: ctx,
+                        initialDate: date,
+                        firstDate: DateTime(2024),
+                        lastDate: DateTime(2030),
+                      );
+                      if (picked != null) setSheet(() => date = picked);
+                    },
+                    borderRadius: BorderRadius.circular(10),
+                    child: _fieldBox(
+                      icon: Icons.calendar_today_rounded,
+                      text: _dateFull(date),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  _label('Tipe'),
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: AppColors.background,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<AttendanceStatus>(
+                        value: status,
+                        isExpanded: true,
+                        icon: const Icon(
+                          Icons.keyboard_arrow_down_rounded,
+                          color: AppColors.textSecondary,
+                        ),
+                        items: AttendanceStatus.values.map((s) {
+                          final st = _attendanceStyle(s);
+                          return DropdownMenuItem(
+                            value: s,
+                            child: Row(
+                              children: [
+                                Icon(st.icon, size: 16, color: st.color),
+                                const SizedBox(width: 10),
+                                Text(
+                                  st.label,
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    color: AppColors.textPrimary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                        onChanged: (v) {
+                          if (v != null) setSheet(() => status = v);
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  if (needsTime) ...[
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _label('Check-in'),
+                              const SizedBox(height: 6),
+                              _timeBtn(
+                                ctx,
+                                checkIn,
+                                (t) => setSheet(() => checkIn = t),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _label('Check-out'),
+                              const SizedBox(height: 6),
+                              _timeBtn(
+                                ctx,
+                                checkOut,
+                                (t) => setSheet(() => checkOut = t),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                  ],
+                  _label('Catatan (opsional)'),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: notesCtrl,
+                    maxLength: 200,
+                    maxLines: 3,
+                    decoration: InputDecoration(
+                      hintText: 'Tambahkan catatan...',
+                      hintStyle: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 13,
+                      ),
+                      filled: true,
+                      fillColor: AppColors.background,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(color: AppColors.border),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(color: AppColors.border),
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 12,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: ElevatedButton(
+                      onPressed: () {
+                        _markAttendance(
+                          date,
+                          status,
+                          checkIn: needsTime ? checkIn : null,
+                          checkOut: needsTime ? checkOut : null,
+                          note: notesCtrl.text.trim().isEmpty
+                              ? null
+                              : notesCtrl.text.trim(),
+                          existing: existing,
+                        );
+                        Navigator.pop(ctx);
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: Text(
+                        existing == null ? 'Simpan' : 'Perbarui',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    ).then((_) => notesCtrl.dispose());
+  }
+
+  // ─── REMINDER SHEET ───────────────────────────────────────────────────────
+
+  void _showReminderSheet({required DateTime date, ReminderEvent? existing}) {
+    final titleCtrl = TextEditingController(text: existing?.title ?? '');
+    final descCtrl = TextEditingController(text: existing?.description ?? '');
+    DateTime startDate =
+        existing?.startDateTime ??
+        DateTime(date.year, date.month, date.day, 9, 0);
+    TimeOfDay startTime = TimeOfDay(
+      hour: startDate.hour,
+      minute: startDate.minute,
+    );
+    bool isAllDay = existing?.isAllDay ?? false;
+    List<int> offsets = List.from(
+      existing?.reminderOffsetsInMinutes ??
+          _store.settings.defaultReminderOffsetsInMinutes,
+    );
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => Padding(
+          padding: EdgeInsets.only(
+            top: 12,
+            left: 20,
+            right: 20,
+            bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _sheetHandle(),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: AppColors.primaryLight,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(
+                        Icons.notifications_active_rounded,
+                        color: AppColors.primary,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      existing == null ? 'Tambah Pengingat' : 'Edit Pengingat',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                _label('Judul*'),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: titleCtrl,
+                  decoration: InputDecoration(
+                    hintText: 'Mis. Sprint Review',
+                    hintStyle: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 13,
+                    ),
+                    filled: true,
+                    fillColor: AppColors.background,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(color: AppColors.border),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(color: AppColors.border),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 12,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                _label('Deskripsi (opsional)'),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: descCtrl,
+                  maxLines: 2,
+                  decoration: InputDecoration(
+                    hintText: 'Tambahkan detail...',
+                    hintStyle: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 13,
+                    ),
+                    filled: true,
+                    fillColor: AppColors.background,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(color: AppColors.border),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(color: AppColors.border),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 12,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _label('Tanggal'),
+                          const SizedBox(height: 6),
+                          InkWell(
+                            onTap: () async {
+                              final picked = await showDatePicker(
+                                context: ctx,
+                                initialDate: startDate,
+                                firstDate: DateTime(2024),
+                                lastDate: DateTime(2030),
+                              );
+                              if (picked != null) {
+                                setSheet(() {
+                                  startDate = DateTime(
+                                    picked.year,
+                                    picked.month,
+                                    picked.day,
+                                    startTime.hour,
+                                    startTime.minute,
+                                  );
+                                });
+                              }
+                            },
+                            borderRadius: BorderRadius.circular(10),
+                            child: _fieldBox(
+                              icon: Icons.calendar_today_rounded,
+                              text:
+                                  '${startDate.day}/${startDate.month}/${startDate.year}',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (!isAllDay) ...[
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _label('Waktu'),
+                            const SizedBox(height: 6),
+                            _timeBtn(ctx, startTime, (t) {
+                              setSheet(() {
+                                startTime = t;
+                                startDate = DateTime(
+                                  startDate.year,
+                                  startDate.month,
+                                  startDate.day,
+                                  t.hour,
+                                  t.minute,
+                                );
+                              });
+                            }),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const Text(
+                      'Seharian',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    const Spacer(),
+                    Switch(
+                      value: isAllDay,
+                      onChanged: (v) => setSheet(() => isAllDay = v),
+                      activeThumbColor: AppColors.primary,
+                      activeTrackColor: AppColors.primaryLight,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                _label('Ingatkan sebelum'),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: [5, 10, 15, 30, 60].map((m) {
+                    final selected = offsets.contains(m);
+                    return GestureDetector(
+                      onTap: () {
+                        setSheet(() {
+                          if (selected) {
+                            offsets = offsets.where((v) => v != m).toList();
+                          } else {
+                            offsets = [...offsets, m]..sort();
+                          }
+                        });
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 7,
+                        ),
+                        decoration: BoxDecoration(
+                          color: selected
+                              ? AppColors.primary
+                              : AppColors.surface,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: selected
+                                ? AppColors.primary
+                                : AppColors.border,
+                          ),
+                        ),
+                        child: Text(
+                          m < 60 ? '$m mnt' : '${m ~/ 60} jam',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: selected
+                                ? Colors.white
+                                : AppColors.textSecondary,
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    onPressed: () {
+                      if (titleCtrl.text.trim().isEmpty) return;
+                      final event = ReminderEvent(
+                        id:
+                            existing?.id ??
+                            DateTime.now().millisecondsSinceEpoch.toString(),
+                        title: titleCtrl.text.trim(),
+                        description: descCtrl.text.trim().isEmpty
+                            ? null
+                            : descCtrl.text.trim(),
+                        startDateTime: startDate,
+                        isAllDay: isAllDay,
+                        reminderOffsetsInMinutes: offsets.isEmpty
+                            ? [15]
+                            : offsets,
+                      );
+                      if (existing != null) {
+                        _store.updateReminder(event);
+                      } else {
+                        _store.addReminder(event);
+                      }
+                      NotificationService.instance.scheduleReminder(event);
+                      Navigator.pop(ctx);
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: Text(
+                      existing == null ? 'Simpan Pengingat' : 'Perbarui',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ).then((_) {
+      titleCtrl.dispose();
+      descCtrl.dispose();
+    });
+  }
+
+  // ─── OFF-DAY SETTINGS ─────────────────────────────────────────────────────
+
+  void _showOffDaySettings() {
+    final settings = _store.settings;
+    Set<int> offDays = Set.from(settings.offDays);
+    bool autoMissing = settings.autoMarkMissingAttendance;
+
+    const dayNames = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'];
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _sheetHandle(),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: AppColors.primaryLight,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(
+                      Icons.settings_rounded,
+                      color: AppColors.primary,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  const Text(
+                    'Pengaturan Jadwal',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                'Hari Libur Mingguan',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Hari-hari ini akan ditandai merah jika tidak ada presensi',
+                style: TextStyle(fontSize: 11, color: AppColors.textSecondary),
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: List.generate(7, (i) {
+                  final weekday = i + 1;
+                  final selected = offDays.contains(weekday);
+                  return GestureDetector(
+                    onTap: () => setSheet(() {
+                      if (selected) {
+                        offDays.remove(weekday);
+                      } else {
+                        offDays.add(weekday);
+                      }
+                    }),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: selected ? AppColors.error : AppColors.surface,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: selected ? AppColors.error : AppColors.border,
+                        ),
+                      ),
+                      child: Text(
+                        dayNames[i],
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: selected
+                              ? Colors.white
+                              : AppColors.textSecondary,
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Tandai Otomatis Absen',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                        SizedBox(height: 2),
+                        Text(
+                          'Hari kerja lampau tanpa presensi ditandai oranye',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: autoMissing,
+                    onChanged: (v) => setSheet(() => autoMissing = v),
+                    activeThumbColor: AppColors.primary,
+                    activeTrackColor: AppColors.primaryLight,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton(
+                  onPressed: () {
+                    _store.updateSettings(
+                      settings.copyWith(
+                        offDays: offDays,
+                        autoMarkMissingAttendance: autoMissing,
+                      ),
+                    );
+                    Navigator.pop(ctx);
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: const Text(
+                    'Simpan Pengaturan',
+                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ─── CRUD ─────────────────────────────────────────────────────────────────
+
+  void _markAttendance(
+    DateTime date,
+    AttendanceStatus status, {
+    TimeOfDay? checkIn,
+    TimeOfDay? checkOut,
+    String? note,
+    AttendanceRecord? existing,
+  }) {
+    final d = DateTime(date.year, date.month, date.day);
+    _store.setAttendance(
+      AttendanceRecord(
+        id: existing?.id ?? d.millisecondsSinceEpoch.toString(),
+        date: d,
+        source: AttendanceSource.manual,
+        status: status,
+        checkIn: checkIn,
+        checkOut: checkOut,
+        note: note,
+      ),
+    );
+    setState(() {
+      _selectedDay = d;
+      _focusedDay = d;
+    });
+    final style = _attendanceStyle(status);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        backgroundColor: style.color,
+        duration: const Duration(seconds: 2),
+        content: Text('Ditandai sebagai ${style.label} · ${_dateFull(d)}'),
+      ),
+    );
+  }
+
+  void _confirmDelete(DateTime date) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('Hapus data presensi?'),
+        content: Text(
+          'Data untuk ${_dateFull(date)} akan dihapus.',
+          style: const TextStyle(fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Batal'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              _store.removeAttendance(date);
+              Navigator.pop(ctx);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.error,
+              foregroundColor: Colors.white,
+              elevation: 0,
+            ),
+            child: const Text('Hapus'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ─── HELPERS ──────────────────────────────────────────────────────────────
+
+  Widget _sheetHandle() => Center(
+    child: Container(
+      width: 40,
+      height: 4,
+      decoration: BoxDecoration(
+        color: AppColors.border,
+        borderRadius: BorderRadius.circular(2),
+      ),
+    ),
+  );
+
+  Widget _label(String text) => Text(
+    text,
+    style: const TextStyle(
+      fontSize: 12,
+      fontWeight: FontWeight.w600,
+      color: AppColors.textSecondary,
+    ),
+  );
+
+  Widget _fieldBox({required IconData icon, required String text}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: AppColors.textSecondary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                fontSize: 13,
+                color: AppColors.textPrimary,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _timeBtn(
+    BuildContext ctx,
+    TimeOfDay? value,
+    ValueChanged<TimeOfDay> onPick,
+  ) {
+    return InkWell(
+      onTap: () async {
+        final picked = await showTimePicker(
+          context: ctx,
+          initialTime: value ?? TimeOfDay.now(),
+          builder: (c, child) => MediaQuery(
+            data: MediaQuery.of(c).copyWith(alwaysUse24HourFormat: true),
+            child: child!,
+          ),
+        );
+        if (picked != null) onPick(picked);
+      },
+      borderRadius: BorderRadius.circular(10),
+      child: _fieldBox(
+        icon: Icons.access_time_rounded,
+        text: value == null ? '--:--' : _fmtTod(value),
+      ),
+    );
+  }
+
+  Widget _timeChip(
+    IconData icon,
+    String label,
+    String value,
+    Color color, {
+    bool full = false,
+  }) {
+    return Container(
+      width: full ? double.infinity : null,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 11,
+              color: AppColors.textSecondary,
+            ),
+          ),
+          const Spacer(),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _chip(String text, Color color, Color bg) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+    decoration: BoxDecoration(
+      color: bg,
+      borderRadius: BorderRadius.circular(6),
+    ),
+    child: Text(
+      text,
+      style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w600),
+    ),
+  );
+
+  // ─── FORMAT ───────────────────────────────────────────────────────────────
+
+  String _fmtTod(TimeOfDay t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+
+  String _fmtDt(DateTime dt) =>
+      '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+
+  String _durationBetween(TimeOfDay a, TimeOfDay b) {
+    final mins = (b.hour * 60 + b.minute) - (a.hour * 60 + a.minute);
+    if (mins <= 0) return '0m';
+    final h = mins ~/ 60;
+    final m = mins % 60;
+    return h > 0 ? '${h}j ${m.toString().padLeft(2, '0')}m' : '${m}m';
+  }
+
+  String _dateFull(DateTime d) {
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'Mei',
+      'Jun',
+      'Jul',
+      'Agu',
+      'Sep',
+      'Okt',
+      'Nov',
+      'Des',
+    ];
+    const days = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'];
+    return '${days[d.weekday - 1]}, ${d.day} ${months[d.month - 1]} ${d.year}';
+  }
+}
+
+// ─── STATUS STYLE ─────────────────────────────────────────────────────────────
+
+class _StatusStyle {
+  final String label;
+  final IconData icon;
+  final Color color;
+  final Color bg;
+  const _StatusStyle({
+    required this.label,
+    required this.icon,
+    required this.color,
+    required this.bg,
+  });
+}
+
+// ─── DAY CELL STYLE ───────────────────────────────────────────────────────────
+
+class _DayCellStyle {
+  final Color bg;
+  final Color border;
+  final Color text;
+  final IconData? icon;
+  final String? extraLabel;
+  const _DayCellStyle({
+    required this.bg,
+    required this.border,
+    required this.text,
+    this.icon,
+    this.extraLabel,
+  });
+}
