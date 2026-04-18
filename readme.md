@@ -10,6 +10,7 @@ Aplikasi mobile *employee self-service* berbasis Flutter untuk absensi berbasis 
 - [Tujuan Produk](#tujuan-produk)
 - [Target Pengguna](#target-pengguna)
 - [Alur Penggunaan](#alur-penggunaan)
+- [Status Pengembangan](#status-pengembangan)
 - [Fitur Utama](#fitur-utama)
 - [Arsitektur Sistem](#arsitektur-sistem)
 - [Face Recognition Pipeline](#face-recognition-pipeline)
@@ -103,9 +104,9 @@ Arahkan wajah ke kamera
 Karyawan masuk kerja ✓
 ```
 
-**Sepanjang hari — Catat tugas**
+**Sepanjang hari — Catat pekerjaan di Tracker**
 
-Setiap kali menyelesaikan sebuah pekerjaan, karyawan membuka tab Tugas dan menambahkan entri: nama tugas, kategori (rapat, coding, review, dll.), durasi, dan rating kualitas kerja. Ini menggantikan laporan kerja harian yang biasanya dikirim lewat chat atau email.
+Setiap kali mengerjakan sebuah pekerjaan, karyawan membuka tab Tracker dan menambahkan entri: nama pekerjaan, project yang dikerjakan, serta waktu mulai dan selesai. Durasi dihitung otomatis dari selisih waktu. Ini menggantikan laporan kerja harian yang biasanya dikirim lewat chat atau email.
 
 **Sore hari — Check-out**
 
@@ -140,13 +141,35 @@ Ketika ada karyawan baru bergabung, admin membuka menu Enrollment, mengisi data 
 
 ---
 
+## Status Pengembangan
+
+Dokumen ini mencakup rancangan produk secara menyeluruh. Agar tidak terjadi kebingungan antara yang sudah ada di aplikasi dan yang masih berupa rencana, berikut ringkasan status saat ini:
+
+| Area | Status | Keterangan |
+|---|---|---|
+| Rancangan UI / Tampilan seluruh halaman | ✅ Selesai | Home, Tracker, Absen, Kalender, Laporan, Profil sudah dibangun dengan tema, warna, dan navigasi final |
+| Bottom navigation dengan FAB melengkung (notched) | ✅ Selesai | 5 tab + tombol Absen di tengah dengan notch dan animasi |
+| Tema & palet warna (flat design) | ✅ Selesai | `AppColors` & `AppTheme` final dan dipakai di seluruh halaman |
+| State dummy / in-memory (`AppStore`) untuk demo UI | ✅ Selesai | Dipakai agar tampilan dapat diinteraksikan tanpa backend |
+| Face detection (MLKit) | ⏳ Belum | Masih di level tampilan, belum terhubung ke kamera real-time |
+| Face recognition SFace via TFLite | ⏳ Belum | Model dan pipeline inferensi belum diintegrasikan |
+| Enrollment wajah (3 sudut → embedding) | ⏳ Belum | Alur admin belum dibangun |
+| Penyimpanan lokal SQLite (`sqflite`) | ⏳ Belum | Data masih disimpan sementara di memori |
+| Sinkronisasi Supabase (cloud) | ⏳ Belum | Konfigurasi dan sync layer belum dibuat |
+| GPS / geolocator saat check-in | ⏳ Belum | Belum ada pencatatan koordinat |
+| Export laporan ke PDF | ⏳ Belum | UI laporan sudah ada, export masih placeholder |
+
+Dengan kata lain: **tampilan sudah rampung**, fokus tahap berikutnya adalah mengisi logika fitur (face recognition, database, sync, GPS, export).
+
+---
+
 ## Fitur Utama
 
 ### 1. Check-in / Check-out
 Karyawan membuka layar kamera, wajah terdeteksi otomatis oleh MLKit, diidentifikasi oleh model SFace via TFLite, lalu jam masuk/keluar beserta koordinat GPS tercatat ke database. Tersedia status visual yang jelas: siap scan, mendeteksi, berhasil, dan gagal.
 
-### 2. Timesheet Harian
-Karyawan mencatat tugas yang dikerjakan: nama tugas, kategori, durasi (jam + menit), dan rating kualitas kerja 1–5 bintang. Data ini menjadi bukti kerja untuk review bulanan.
+### 2. Tracker Harian
+Karyawan mencatat pekerjaan yang dikerjakan: nama pekerjaan, project terkait, serta waktu mulai dan selesai. Durasi dihitung otomatis dari selisih waktu. Data ini menjadi bukti kerja untuk review bulanan.
 
 ### 3. Kalender Kehadiran
 Tampilan kalender bulanan dengan marker warna:
@@ -290,7 +313,7 @@ face_recognizer/
 │   │   │   ├── data/           # Repository + model database
 │   │   │   ├── domain/         # Use case + entitas bisnis
 │   │   │   └── presentation/   # Screen + widget kamera
-│   │   ├── timesheet/          # Fitur pencatatan tugas harian
+│   │   ├── timesheet/          # Fitur Tracker — pencatatan pekerjaan harian
 │   │   ├── calendar/           # Fitur kalender kehadiran
 │   │   ├── report/             # Fitur laporan performa & PDF export
 │   │   └── enrollment/         # Pendaftaran wajah karyawan (admin only)
@@ -356,18 +379,64 @@ flutter run
 
 ## Desain & UI
 
-**Filosofi:** Flat design murni — tidak ada gradasi, tidak ada drop shadow, tidak ada blur. Semua elemen menggunakan solid fill. Visual hierarchy dibangun dari kontras warna, ukuran teks, dan whitespace.
+Bagian ini menggambarkan tampilan aplikasi **yang sudah selesai dibangun**. Logika fitur (face recognition, database, sync) belum terhubung — semua data di layar saat ini masih bersumber dari store dummy di memori (`AppStore`) agar tampilan bisa dicoba secara interaktif.
+
+**Filosofi:** Flat design murni — tidak ada gradasi, tidak ada drop shadow berlebihan, tidak ada blur. Semua elemen menggunakan solid fill. Visual hierarchy dibangun dari kontras warna, ukuran teks, dan whitespace. Tema diimplementasikan di `lib/shared/theme/` (`AppColors` + `AppTheme`).
 
 **Palet Warna**
 
+Diambil langsung dari `lib/shared/theme/app_colors.dart`:
+
 | Peran | Hex | Digunakan Pada |
 |---|---|---|
-| Primary | `#1565C0` | Tombol utama, AppBar, aksen |
-| Primary Dark | `#0D47A1` | Header, state aktif |
+| Primary | `#1565C0` | Tombol utama, aksen, FAB tengah |
+| Primary Dark | `#0D47A1` | Header, state aktif FAB |
+| Primary Light | `#E3F2FD` | Background pill tab yang aktif |
 | Background | `#F5F7FA` | Latar semua halaman |
-| Surface | `#FFFFFF` | Kartu dan panel konten |
-| Success | `#1B5E20` | Tombol masuk, status check-in berhasil |
+| Surface | `#FFFFFF` | Kartu, panel konten, bottom bar |
+| Success | `#1B5E20` | Status check-in berhasil |
+| Success Light | `#ECFDF5` | Background pill status hadir |
 | Error | `#B71C1C` | Tombol keluar, status gagal dikenali |
+| Error Light | `#FEF2F2` | Background pill status gagal |
 | Warning | `#FF8F00` | Indikator keterlambatan |
+| Warning Light | `#FFF8E1` | Background pill status late |
+| Missing | `#D97706` | Indikator tidak hadir / data hilang |
+| Text Primary | `#1A1A2E` | Judul dan body text utama |
+| Text Secondary | `#6B7280` | Label, caption, ikon non-aktif |
+| Border | `#E5E7EB` | Garis pemisah, outline kartu |
 
-**Navigasi:** Bottom navigation 5 tab — Beranda · Absen · Tugas · Kalender · Laporan.
+**Navigasi**
+
+Bottom navigation dengan **5 tab + FAB melengkung (notched)** di tengah:
+
+```
+┌─────────────────────────────────────────────────┐
+│                                                 │
+│           ╭──────  [ FAB ]  ──────╮             │
+│  ╭────────╯                       ╰────────╮    │
+│  │  Home    Tracker   |   Kalender  Laporan │   │
+│  ╰──────────────────────────────────────────╯   │
+└─────────────────────────────────────────────────┘
+```
+
+- **Home** — ringkasan hari ini dan akses cepat
+- **Tracker** — pencatatan pekerjaan harian (sebelumnya disebut "Tugas")
+- **Absen** (FAB tengah) — tombol utama check-in / check-out berbasis wajah
+- **Kalender** — tampilan kehadiran bulanan
+- **Laporan** — dashboard performa
+
+FAB tengah memiliki animasi scale saat ditekan dan haptic feedback (`HapticFeedback.mediumImpact`). Pergantian tab memicu `HapticFeedback.selectionClick`, ikon berganti antara versi outlined ↔ filled, dan background pill muncul pada tab aktif.
+
+**Halaman yang Sudah Dibangun**
+
+| Halaman | File | Status Tampilan |
+|---|---|---|
+| Home | `features/home/presentation/home_screen.dart` | ✅ Selesai |
+| Tracker (Timesheet) | `features/timesheet/presentation/timesheet_screen.dart` | ✅ Selesai |
+| Absen (Attendance) | `features/attendance/presentation/attendance_screen.dart` | ✅ Selesai |
+| Kalender | `features/calendar/presentation/calendar_screen.dart` | ✅ Selesai |
+| Laporan | `features/report/presentation/report_screen.dart` | ✅ Selesai |
+| Profil | `features/profile/presentation/profile_screen.dart` | ✅ Selesai |
+| Main Nav (shell + bottom bar) | `features/main_nav/main_screen.dart` | ✅ Selesai |
+
+> Catatan: folder `timesheet/` masih memakai nama lama di codebase, tetapi istilah yang tampil di UI dan dokumen ini adalah **Tracker**.
