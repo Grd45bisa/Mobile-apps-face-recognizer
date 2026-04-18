@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../shared/services/auth_service.dart';
+import '../../../shared/services/realtime_sync_service.dart';
 import '../../../shared/store/app_store.dart';
 import '../../../shared/theme/app_colors.dart';
 import '../../main_nav/main_screen.dart';
@@ -41,8 +42,9 @@ class _SplashScreenState extends State<SplashScreen>
     if (!mounted) return;
 
     if (AuthService.instance.isSignedIn) {
-      // Load data cloud di background, langsung masuk
+      final uid = AuthService.instance.currentUserId;
       AppStore.instance.loadFromCloud();
+      if (uid != null) RealtimeSyncService.instance.subscribe(uid);
       _navigate(const MainScreen());
     } else {
       _navigate(const LoginScreen());

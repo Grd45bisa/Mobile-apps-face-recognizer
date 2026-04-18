@@ -32,6 +32,15 @@ class AppStore extends ChangeNotifier {
     _persistSettings();
   }
 
+  /// Apply settings that already came from the DB (no re-persist needed).
+  void applyRemoteSettings(WorkScheduleSettings s) {
+    _settings = s;
+    notifyListeners();
+  }
+
+  /// Signal that the projects list changed (realtime event).
+  void notifyProjectsChanged() => notifyListeners();
+
   Future<void> _persistSettings() async {
     final uid = AuthService.instance.currentUserId;
     if (uid == null) return;

@@ -72,6 +72,20 @@ class _CalendarScreenState extends State<CalendarScreen>
     }
   }
 
+  Future<void> _refreshCalendar() async {
+    _closeFab();
+    await _store.loadMonth(_focusedDay.year, _focusedDay.month);
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Kalender berhasil diperbarui'),
+        duration: Duration(seconds: 1),
+      ),
+    );
+  }
+
   // ─── STATUS STYLES ────────────────────────────────────────────────────────
 
   _StatusStyle _attendanceStyle(AttendanceStatus s) {
@@ -250,17 +264,21 @@ class _CalendarScreenState extends State<CalendarScreen>
         body: ListenableBuilder(
           listenable: _store,
           builder: (context, _) {
-            return ListView(
-              padding: EdgeInsets.fromLTRB(12, 12, 12, contentBottomPadding),
-              children: [
-                _buildMonthSummary(),
-                const SizedBox(height: 12),
-                _buildCalendarCard(),
-                const SizedBox(height: 12),
-                _buildLegend(),
-                const SizedBox(height: 12),
-                _buildDayDetail(),
-              ],
+            return RefreshIndicator(
+              onRefresh: _refreshCalendar,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: EdgeInsets.fromLTRB(12, 12, 12, contentBottomPadding),
+                children: [
+                  _buildMonthSummary(),
+                  const SizedBox(height: 12),
+                  _buildCalendarCard(),
+                  const SizedBox(height: 12),
+                  _buildLegend(),
+                  const SizedBox(height: 12),
+                  _buildDayDetail(),
+                ],
+              ),
             );
           },
         ),

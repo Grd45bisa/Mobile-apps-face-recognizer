@@ -5,6 +5,7 @@ import 'features/auth/presentation/splash_screen.dart';
 import 'features/main_nav/main_screen.dart';
 import 'shared/services/auth_service.dart';
 import 'shared/services/notification_service.dart';
+import 'shared/services/realtime_sync_service.dart';
 import 'shared/services/supabase_client.dart';
 import 'shared/store/app_store.dart';
 import 'shared/theme/app_theme.dart';
@@ -49,6 +50,8 @@ class _FaceWorkAppState extends State<FaceWorkApp> {
             return;
           }
           AppStore.instance.loadFromCloud();
+          final uid = AuthService.instance.currentUserId;
+          if (uid != null) RealtimeSyncService.instance.subscribe(uid);
           if (!_isOnResetScreen()) {
             nav.pushAndRemoveUntil(
               MaterialPageRoute(builder: (_) => const MainScreen()),
@@ -63,6 +66,7 @@ class _FaceWorkAppState extends State<FaceWorkApp> {
 
         case AuthChangeEvent.signedOut:
           _initialSignedInSkipped = false;
+          RealtimeSyncService.instance.unsubscribe();
           AppStore.instance.clear();
           nav.pushAndRemoveUntil(
             MaterialPageRoute(builder: (_) => const SplashScreen()),
