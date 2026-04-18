@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../home/presentation/home_screen.dart';
 import '../attendance/presentation/attendance_screen.dart';
-import '../timesheet/presentation/timesheet_screen.dart';
+import '../tracker/presentation/tracker_screen.dart';
 import '../calendar/presentation/calendar_screen.dart';
 import '../report/presentation/report_screen.dart';
 import '../../shared/theme/app_colors.dart';
@@ -24,24 +24,26 @@ class _MainScreenState extends State<MainScreen>
   static const double _fabSize = 64;
   static const double _notchRadius = 42;
 
-  final List<Widget> _screens = const [
-    HomeScreen(),
-    TimesheetScreen(),
-    AttendanceScreen(),
-    CalendarScreen(),
-    ReportScreen(),
-  ];
+  late final List<Widget> _screens;
 
   @override
   void initState() {
     super.initState();
+    _screens = [
+      HomeScreen(onGoToTracker: () => _onTabSelected(1)),
+      const TrackerScreen(),
+      const AttendanceScreen(),
+      const CalendarScreen(),
+      const ReportScreen(),
+    ];
     _fabController = AnimationController(
       duration: const Duration(milliseconds: 150),
       vsync: this,
     );
-    _fabScale = Tween<double>(begin: 1.0, end: 0.92).animate(
-      CurvedAnimation(parent: _fabController, curve: Curves.easeInOut),
-    );
+    _fabScale = Tween<double>(
+      begin: 1.0,
+      end: 0.92,
+    ).animate(CurvedAnimation(parent: _fabController, curve: Curves.easeInOut));
   }
 
   @override
@@ -289,15 +291,21 @@ class _CurvedBarPainter extends CustomPainter {
 
     // Entry curve down into the notch
     path.cubicTo(
-      leftNotch + notchWidth * 0.22, 0,
-      centerX - notchWidth * 0.42, dipDepth,
-      centerX, dipDepth,
+      leftNotch + notchWidth * 0.22,
+      0,
+      centerX - notchWidth * 0.42,
+      dipDepth,
+      centerX,
+      dipDepth,
     );
     // Exit curve up from the notch
     path.cubicTo(
-      centerX + notchWidth * 0.42, dipDepth,
-      rightNotch - notchWidth * 0.22, 0,
-      rightNotch, 0,
+      centerX + notchWidth * 0.42,
+      dipDepth,
+      rightNotch - notchWidth * 0.22,
+      0,
+      rightNotch,
+      0,
     );
 
     path.lineTo(size.width, 0);
@@ -316,14 +324,20 @@ class _CurvedBarPainter extends CustomPainter {
     borderPath.moveTo(0, 0);
     borderPath.lineTo(leftNotch, 0);
     borderPath.cubicTo(
-      leftNotch + notchWidth * 0.22, 0,
-      centerX - notchWidth * 0.42, dipDepth,
-      centerX, dipDepth,
+      leftNotch + notchWidth * 0.22,
+      0,
+      centerX - notchWidth * 0.42,
+      dipDepth,
+      centerX,
+      dipDepth,
     );
     borderPath.cubicTo(
-      centerX + notchWidth * 0.42, dipDepth,
-      rightNotch - notchWidth * 0.22, 0,
-      rightNotch, 0,
+      centerX + notchWidth * 0.42,
+      dipDepth,
+      rightNotch - notchWidth * 0.22,
+      0,
+      rightNotch,
+      0,
     );
     borderPath.lineTo(size.width, 0);
 

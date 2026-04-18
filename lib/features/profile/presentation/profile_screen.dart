@@ -1,59 +1,86 @@
 import 'package:flutter/material.dart';
+import '../../../shared/models/app_models.dart';
+import '../../../shared/store/app_store.dart';
 import '../../../shared/theme/app_colors.dart';
+import '../controller/profile_controller.dart';
 
-class ProfileScreen extends StatelessWidget {
+class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
   @override
+  State<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends State<ProfileScreen> {
+  final _controller = ProfileController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      appBar: AppBar(
-        backgroundColor: AppColors.surface,
-        elevation: 0,
-        surfaceTintColor: Colors.transparent,
-        leading: IconButton(
-          icon: const Icon(
-            Icons.arrow_back_rounded,
-            color: AppColors.textPrimary,
-          ),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: const Text(
-          'Profil',
-          style: TextStyle(
-            color: AppColors.textPrimary,
-            fontWeight: FontWeight.bold,
-            fontSize: 17,
-          ),
-        ),
-        bottom: const PreferredSize(
-          preferredSize: Size.fromHeight(1),
-          child: Divider(height: 1, color: AppColors.border),
+    return ListenableBuilder(
+      listenable: Listenable.merge([AppStore.instance, _controller]),
+      builder: (context, _) {
+        final profile = AppStore.instance.profile;
+        return Scaffold(
+          backgroundColor: AppColors.background,
+          appBar: _buildAppBar(context),
+          body: profile == null
+              ? const Center(child: CircularProgressIndicator())
+              : ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 20, 16, 40),
+                  children: [
+                    _buildHeader(profile),
+                    const SizedBox(height: 20),
+                    _sectionLabel('Info Akun'),
+                    const SizedBox(height: 8),
+                    _buildInfoCard(profile),
+                    const SizedBox(height: 20),
+                    _sectionLabel('Pengaturan'),
+                    const SizedBox(height: 8),
+                    _buildSettingsCard(profile),
+                    const SizedBox(height: 28),
+                    _buildLogoutButton(context),
+                  ],
+                ),
+        );
+      },
+    );
+  }
+
+  // ─── APP BAR ─────────────────────────────────────────────────────────────
+
+  PreferredSizeWidget _buildAppBar(BuildContext context) {
+    return AppBar(
+      backgroundColor: AppColors.surface,
+      elevation: 0,
+      surfaceTintColor: Colors.transparent,
+      leading: IconButton(
+        icon: const Icon(Icons.arrow_back_rounded, color: AppColors.textPrimary),
+        onPressed: () => Navigator.pop(context),
+      ),
+      title: const Text(
+        'Profil',
+        style: TextStyle(
+          color: AppColors.textPrimary,
+          fontWeight: FontWeight.bold,
+          fontSize: 17,
         ),
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 20, 16, 40),
-        children: [
-          _buildProfileHeader(),
-          const SizedBox(height: 20),
-          _buildSectionLabel('Info Akun'),
-          const SizedBox(height: 8),
-          _buildInfoCard(),
-          const SizedBox(height: 20),
-          _buildSectionLabel('Pengaturan'),
-          const SizedBox(height: 8),
-          _buildSettingsCard(),
-          const SizedBox(height: 28),
-          _buildLogoutButton(context),
-        ],
+      bottom: const PreferredSize(
+        preferredSize: Size.fromHeight(1),
+        child: Divider(height: 1, color: AppColors.border),
       ),
     );
   }
 
   // ─── HEADER ──────────────────────────────────────────────────────────────
 
-  Widget _buildProfileHeader() {
+  Widget _buildHeader(EmployeeProfile profile) {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -74,16 +101,16 @@ class ProfileScreen extends StatelessWidget {
                   shape: BoxShape.circle,
                   border: Border.all(color: AppColors.border, width: 1.5),
                 ),
-                child: const Center(
-                  child: Text(
-                    'P',
-                    style: TextStyle(
-                      fontSize: 28,
-                      color: AppColors.primary,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
+                child: profile.avatarUrl != null
+                    ? ClipOval(
+                        child: Image.network(
+                          profile.avatarUrl!,
+                          fit: BoxFit.cover,
+                          errorBuilder: (ctx, err, st) =>
+                              Center(child: _initialsText(profile.initials)),
+                        ),
+                      )
+                    : Center(child: _initialsText(profile.initials)),
               ),
               Positioned(
                 bottom: 0,
@@ -96,11 +123,7 @@ class ProfileScreen extends StatelessWidget {
                     shape: BoxShape.circle,
                     border: Border.all(color: AppColors.surface, width: 1.5),
                   ),
-                  child: const Icon(
-                    Icons.circle,
-                    size: 8,
-                    color: AppColors.success,
-                  ),
+                  child: const Icon(Icons.circle, size: 8, color: AppColors.success),
                 ),
               ),
             ],
@@ -112,13 +135,16 @@ class ProfileScreen extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    const Text(
-                      'Pahmi',
-                      style: TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.bold,
-                        color: AppColors.textPrimary,
-                        letterSpacing: -0.2,
+                    Flexible(
+                      child: Text(
+                        profile.fullName,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.textPrimary,
+                          letterSpacing: -0.2,
+                        ),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -142,27 +168,31 @@ class ProfileScreen extends StatelessWidget {
                     ),
                   ],
                 ),
-                const SizedBox(height: 3),
-                const Text(
-                  'Software Engineer',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: AppColors.textSecondary,
+                if (profile.position != null) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    profile.position!,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: AppColors.textSecondary,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 1),
-                const Text(
-                  'Divisi Engineering',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: AppColors.textSecondary,
+                ],
+                if (profile.department != null) ...[
+                  const SizedBox(height: 1),
+                  Text(
+                    profile.department!,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textSecondary,
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
           IconButton(
-            onPressed: () {},
+            onPressed: () => _showEditSheet(context, profile),
             icon: const Icon(
               Icons.edit_outlined,
               size: 20,
@@ -182,23 +212,18 @@ class ProfileScreen extends StatelessWidget {
     );
   }
 
-  // ─── SECTION LABEL ───────────────────────────────────────────────────────
-
-  Widget _buildSectionLabel(String title) {
-    return Text(
-      title,
-      style: const TextStyle(
-        fontSize: 13,
-        fontWeight: FontWeight.w700,
-        color: AppColors.textSecondary,
-        letterSpacing: 0.4,
-      ),
-    );
-  }
+  Widget _initialsText(String initials) => Text(
+        initials,
+        style: const TextStyle(
+          fontSize: 28,
+          color: AppColors.primary,
+          fontWeight: FontWeight.bold,
+        ),
+      );
 
   // ─── INFO CARD ───────────────────────────────────────────────────────────
 
-  Widget _buildInfoCard() {
+  Widget _buildInfoCard(EmployeeProfile profile) {
     return Container(
       decoration: BoxDecoration(
         color: AppColors.surface,
@@ -212,15 +237,7 @@ class ProfileScreen extends StatelessWidget {
             iconColor: AppColors.primary,
             iconBg: AppColors.primaryLight,
             label: 'ID Karyawan',
-            value: 'EMP-2024-001',
-          ),
-          _divider(),
-          _infoRow(
-            icon: Icons.group_outlined,
-            iconColor: AppColors.primary,
-            iconBg: AppColors.primaryLight,
-            label: 'Tim',
-            value: 'Engineering',
+            value: profile.id.substring(0, 8).toUpperCase(),
           ),
           _divider(),
           _infoRow(
@@ -228,7 +245,7 @@ class ProfileScreen extends StatelessWidget {
             iconColor: AppColors.primary,
             iconBg: AppColors.primaryLight,
             label: 'Email',
-            value: 'pahmi@kitapunya.web.id',
+            value: profile.email,
           ),
           _divider(),
           _infoRow(
@@ -236,7 +253,25 @@ class ProfileScreen extends StatelessWidget {
             iconColor: AppColors.primary,
             iconBg: AppColors.primaryLight,
             label: 'Telepon',
-            value: '+62 812-0000-0001',
+            value: profile.phoneNumber?.isNotEmpty == true
+                ? profile.phoneNumber!
+                : '-',
+          ),
+          _divider(),
+          _infoRow(
+            icon: Icons.group_outlined,
+            iconColor: AppColors.primary,
+            iconBg: AppColors.primaryLight,
+            label: 'Departemen',
+            value: profile.department ?? '-',
+          ),
+          _divider(),
+          _infoRow(
+            icon: Icons.work_outline_rounded,
+            iconColor: AppColors.primary,
+            iconBg: AppColors.primaryLight,
+            label: 'Jabatan',
+            value: profile.position ?? '-',
           ),
         ],
       ),
@@ -265,18 +300,19 @@ class ProfileScreen extends StatelessWidget {
           const SizedBox(width: 12),
           Text(
             label,
-            style: const TextStyle(
-              fontSize: 13,
-              color: AppColors.textSecondary,
-            ),
+            style: const TextStyle(fontSize: 13, color: AppColors.textSecondary),
           ),
           const Spacer(),
-          Text(
-            value,
-            style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: AppColors.textPrimary,
+          Flexible(
+            child: Text(
+              value,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.end,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
+              ),
             ),
           ),
         ],
@@ -286,7 +322,7 @@ class ProfileScreen extends StatelessWidget {
 
   // ─── SETTINGS CARD ───────────────────────────────────────────────────────
 
-  Widget _buildSettingsCard() {
+  Widget _buildSettingsCard(EmployeeProfile profile) {
     return Container(
       decoration: BoxDecoration(
         color: AppColors.surface,
@@ -301,22 +337,30 @@ class ProfileScreen extends StatelessWidget {
             iconBg: AppColors.warningLight,
             label: 'Notifikasi',
             trailing: Switch(
-              value: true,
-              onChanged: (_) {},
+              value: profile.notificationsEnabled,
+              onChanged: (val) =>
+                  _controller.toggleNotifications(enabled: val),
               activeThumbColor: AppColors.primary,
               materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
             ),
           ),
           _divider(),
-          _settingRow(
-            icon: Icons.lock_outline_rounded,
-            iconColor: AppColors.primary,
-            iconBg: AppColors.primaryLight,
-            label: 'Ubah Password',
-            trailing: const Icon(
-              Icons.chevron_right_rounded,
-              color: AppColors.textSecondary,
-              size: 20,
+          InkWell(
+            onTap: () => _showChangePasswordSheet(context),
+            borderRadius: const BorderRadius.only(
+              bottomLeft: Radius.circular(14),
+              bottomRight: Radius.circular(14),
+            ),
+            child: _settingRow(
+              icon: Icons.lock_outline_rounded,
+              iconColor: AppColors.primary,
+              iconBg: AppColors.primaryLight,
+              label: 'Ubah Password',
+              trailing: const Icon(
+                Icons.chevron_right_rounded,
+                color: AppColors.textSecondary,
+                size: 20,
+              ),
             ),
           ),
           _divider(),
@@ -352,10 +396,7 @@ class ProfileScreen extends StatelessWidget {
             label: 'Versi Aplikasi',
             trailing: const Text(
               'v1.0.0',
-              style: TextStyle(
-                fontSize: 13,
-                color: AppColors.textSecondary,
-              ),
+              style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
             ),
           ),
         ],
@@ -399,11 +440,21 @@ class ProfileScreen extends StatelessWidget {
   }
 
   Widget _divider() => const Divider(
-    height: 1,
-    indent: 16,
-    endIndent: 16,
-    color: AppColors.border,
-  );
+        height: 1,
+        indent: 16,
+        endIndent: 16,
+        color: AppColors.border,
+      );
+
+  Widget _sectionLabel(String title) => Text(
+        title,
+        style: const TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w700,
+          color: AppColors.textSecondary,
+          letterSpacing: 0.4,
+        ),
+      );
 
   // ─── LOGOUT ──────────────────────────────────────────────────────────────
 
@@ -460,7 +511,10 @@ class ProfileScreen extends StatelessWidget {
             ),
           ),
           ElevatedButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () async {
+              Navigator.pop(context);
+              await _controller.signOut();
+            },
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.error,
               foregroundColor: Colors.white,
@@ -471,6 +525,424 @@ class ProfileScreen extends StatelessWidget {
             ),
             child: const Text('Keluar'),
           ),
+        ],
+      ),
+    );
+  }
+
+  // ─── EDIT PROFILE BOTTOM SHEET ────────────────────────────────────────────
+
+  void _showEditSheet(BuildContext context, EmployeeProfile profile) {
+    final nameCtrl = TextEditingController(text: profile.fullName);
+    final deptCtrl = TextEditingController(text: profile.department ?? '');
+    final posCtrl = TextEditingController(text: profile.position ?? '');
+    final phoneCtrl = TextEditingController(text: profile.phoneNumber ?? '');
+    final formKey = GlobalKey<FormState>();
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return ListenableBuilder(
+          listenable: _controller,
+          builder: (ctx, _) {
+            return _BottomSheet(
+              title: 'Edit Profil',
+              onClose: () => Navigator.pop(ctx),
+              child: Form(
+                key: formKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _sheetField(
+                      controller: nameCtrl,
+                      label: 'Nama Lengkap',
+                      validator: (v) =>
+                          (v == null || v.trim().isEmpty)
+                              ? 'Nama tidak boleh kosong'
+                              : null,
+                    ),
+                    const SizedBox(height: 12),
+                    _sheetField(
+                      controller: phoneCtrl,
+                      label: 'Nomor Telepon',
+                      keyboardType: TextInputType.phone,
+                    ),
+                    const SizedBox(height: 12),
+                    _sheetField(
+                      controller: deptCtrl,
+                      label: 'Departemen',
+                    ),
+                    const SizedBox(height: 12),
+                    _sheetField(
+                      controller: posCtrl,
+                      label: 'Jabatan',
+                    ),
+                    if (_controller.updateStatus == ProfileActionStatus.error)
+                      _errorBanner(_controller.errorMessage ?? ''),
+                    if (_controller.updateStatus == ProfileActionStatus.success)
+                      _successBanner(_controller.successMessage ?? ''),
+                    const SizedBox(height: 20),
+                    SizedBox(
+                      height: 48,
+                      child: ElevatedButton(
+                        onPressed: _controller.isUpdating
+                            ? null
+                            : () async {
+                                if (!formKey.currentState!.validate()) return;
+                                final updated = profile.copyWith(
+                                  fullName: nameCtrl.text.trim(),
+                                  department: deptCtrl.text.trim().isEmpty
+                                      ? null
+                                      : deptCtrl.text.trim(),
+                                  position: posCtrl.text.trim().isEmpty
+                                      ? null
+                                      : posCtrl.text.trim(),
+                                  phoneNumber: phoneCtrl.text.trim().isEmpty
+                                      ? null
+                                      : phoneCtrl.text.trim(),
+                                );
+                                final ok =
+                                    await _controller.updateProfile(updated);
+                                if (ok && ctx.mounted) {
+                                  Navigator.pop(ctx);
+                                  _controller.resetUpdate();
+                                }
+                              },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: _controller.isUpdating
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Text(
+                                'Simpan Perubahan',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 14,
+                                ),
+                              ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    ).whenComplete(_controller.resetUpdate);
+  }
+
+  // ─── CHANGE PASSWORD BOTTOM SHEET ─────────────────────────────────────────
+
+  void _showChangePasswordSheet(BuildContext context) {
+    final newPassCtrl = TextEditingController();
+    final confirmCtrl = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+    var obscureNew = true;
+    var obscureConfirm = true;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            return ListenableBuilder(
+              listenable: _controller,
+              builder: (ctx, _) {
+                return _BottomSheet(
+                  title: 'Ubah Password',
+                  onClose: () => Navigator.pop(ctx),
+                  child: Form(
+                    key: formKey,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _sheetField(
+                          controller: newPassCtrl,
+                          label: 'Password Baru',
+                          obscureText: obscureNew,
+                          suffixIcon: IconButton(
+                            icon: Icon(
+                              obscureNew
+                                  ? Icons.visibility_outlined
+                                  : Icons.visibility_off_outlined,
+                              size: 18,
+                              color: AppColors.textSecondary,
+                            ),
+                            onPressed: () =>
+                                setLocal(() => obscureNew = !obscureNew),
+                          ),
+                          validator: (v) {
+                            if (v == null || v.isEmpty) {
+                              return 'Password tidak boleh kosong';
+                            }
+                            if (v.length < 6) return 'Minimal 6 karakter';
+                            return null;
+                          },
+                        ),
+                        const SizedBox(height: 12),
+                        _sheetField(
+                          controller: confirmCtrl,
+                          label: 'Konfirmasi Password',
+                          obscureText: obscureConfirm,
+                          suffixIcon: IconButton(
+                            icon: Icon(
+                              obscureConfirm
+                                  ? Icons.visibility_outlined
+                                  : Icons.visibility_off_outlined,
+                              size: 18,
+                              color: AppColors.textSecondary,
+                            ),
+                            onPressed: () => setLocal(
+                                () => obscureConfirm = !obscureConfirm),
+                          ),
+                          validator: (v) {
+                            if (v != newPassCtrl.text) {
+                              return 'Password tidak sama';
+                            }
+                            return null;
+                          },
+                        ),
+                        if (_controller.passwordStatus ==
+                            ProfileActionStatus.error)
+                          _errorBanner(_controller.errorMessage ?? ''),
+                        if (_controller.passwordStatus ==
+                            ProfileActionStatus.success)
+                          _successBanner(_controller.successMessage ?? ''),
+                        const SizedBox(height: 20),
+                        SizedBox(
+                          height: 48,
+                          child: ElevatedButton(
+                            onPressed: _controller.isChangingPassword
+                                ? null
+                                : () async {
+                                    if (!formKey.currentState!.validate()) {
+                                      return;
+                                    }
+                                    final ok = await _controller
+                                        .changePassword(newPassCtrl.text);
+                                    if (ok && ctx.mounted) {
+                                      Navigator.pop(ctx);
+                                      _controller.resetPassword();
+                                      _showSnack(
+                                        context,
+                                        'Password berhasil diubah.',
+                                      );
+                                    }
+                                  },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.primary,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            child: _controller.isChangingPassword
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      color: Colors.white,
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Text(
+                                    'Simpan Password',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            );
+          },
+        );
+      },
+    ).whenComplete(_controller.resetPassword);
+  }
+
+  // ─── SHEET HELPERS ────────────────────────────────────────────────────────
+
+  Widget _sheetField({
+    required TextEditingController controller,
+    required String label,
+    bool obscureText = false,
+    Widget? suffixIcon,
+    TextInputType? keyboardType,
+    String? Function(String?)? validator,
+  }) {
+    return TextFormField(
+      controller: controller,
+      obscureText: obscureText,
+      keyboardType: keyboardType,
+      validator: validator,
+      style: const TextStyle(fontSize: 14, color: AppColors.textPrimary),
+      decoration: InputDecoration(
+        labelText: label,
+        labelStyle:
+            const TextStyle(fontSize: 13, color: AppColors.textSecondary),
+        suffixIcon: suffixIcon,
+        filled: true,
+        fillColor: AppColors.background,
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: AppColors.border),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: AppColors.border),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
+        ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: AppColors.error),
+        ),
+        focusedErrorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: AppColors.error, width: 1.5),
+        ),
+      ),
+    );
+  }
+
+  Widget _errorBanner(String msg) => Container(
+        margin: const EdgeInsets.only(top: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: AppColors.errorLight,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppColors.error.withValues(alpha: 0.3)),
+        ),
+        child: Text(
+          msg,
+          style: const TextStyle(
+            fontSize: 13,
+            color: AppColors.error,
+          ),
+        ),
+      );
+
+  Widget _successBanner(String msg) => Container(
+        margin: const EdgeInsets.only(top: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: AppColors.successLight,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppColors.success.withValues(alpha: 0.3)),
+        ),
+        child: Text(
+          msg,
+          style: const TextStyle(
+            fontSize: 13,
+            color: AppColors.success,
+          ),
+        ),
+      );
+
+  void _showSnack(BuildContext context, String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.success,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+    );
+  }
+}
+
+// ─── BOTTOM SHEET WRAPPER ─────────────────────────────────────────────────────
+
+class _BottomSheet extends StatelessWidget {
+  final String title;
+  final Widget child;
+  final VoidCallback onClose;
+
+  const _BottomSheet({
+    required this.title,
+    required this.child,
+    required this.onClose,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      padding: EdgeInsets.fromLTRB(20, 0, 20, 20 + bottomInset),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 12),
+          Container(
+            width: 36,
+            height: 4,
+            decoration: BoxDecoration(
+              color: AppColors.border,
+              borderRadius: BorderRadius.circular(4),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const Spacer(),
+              IconButton(
+                onPressed: onClose,
+                icon: const Icon(
+                  Icons.close_rounded,
+                  color: AppColors.textSecondary,
+                  size: 20,
+                ),
+                style: IconButton.styleFrom(
+                  backgroundColor: AppColors.background,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          child,
         ],
       ),
     );

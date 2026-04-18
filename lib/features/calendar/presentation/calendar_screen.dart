@@ -3,7 +3,13 @@ import 'package:table_calendar/table_calendar.dart';
 import '../../../shared/theme/app_colors.dart';
 import '../../../shared/models/app_models.dart';
 import '../../../shared/store/app_store.dart';
+import '../../../shared/services/attendance_service.dart';
+import '../../../shared/services/auth_service.dart';
 import '../../../shared/services/notification_service.dart';
+import '../../../shared/services/reminder_service.dart';
+import '../../../shared/services/worklog_service.dart';
+import '../../../shared/services/project_service.dart';
+import '../../../shared/providers/notification_provider.dart';
 
 class CalendarScreen extends StatefulWidget {
   const CalendarScreen({super.key});
@@ -12,7 +18,8 @@ class CalendarScreen extends StatefulWidget {
   State<CalendarScreen> createState() => _CalendarScreenState();
 }
 
-class _CalendarScreenState extends State<CalendarScreen> {
+class _CalendarScreenState extends State<CalendarScreen>
+    with SingleTickerProviderStateMixin {
   DateTime _focusedDay = DateTime.now();
   DateTime _selectedDay = DateTime(
     DateTime.now().year,
@@ -22,6 +29,48 @@ class _CalendarScreenState extends State<CalendarScreen> {
   CalendarFormat _calendarFormat = CalendarFormat.month;
 
   final _store = AppStore.instance;
+
+  // ─── FAB STATE ────────────────────────────────────────────────────────────
+  bool _fabExpanded = false;
+  late AnimationController _fabCtrl;
+  late Animation<double> _fabRotate;
+  late Animation<double> _fabScale;
+
+  @override
+  void initState() {
+    super.initState();
+    _fabCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 220),
+    );
+    _fabRotate = Tween<double>(
+      begin: 0,
+      end: 0.375,
+    ).animate(CurvedAnimation(parent: _fabCtrl, curve: Curves.easeInOut));
+    _fabScale = CurvedAnimation(parent: _fabCtrl, curve: Curves.easeInOut);
+  }
+
+  @override
+  void dispose() {
+    _fabCtrl.dispose();
+    super.dispose();
+  }
+
+  void _toggleFab() {
+    setState(() => _fabExpanded = !_fabExpanded);
+    if (_fabExpanded) {
+      _fabCtrl.forward();
+    } else {
+      _fabCtrl.reverse();
+    }
+  }
+
+  void _closeFab() {
+    if (_fabExpanded) {
+      setState(() => _fabExpanded = false);
+      _fabCtrl.reverse();
+    }
+  }
 
   // ─── STATUS STYLES ────────────────────────────────────────────────────────
 
@@ -140,77 +189,202 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      appBar: AppBar(
-        backgroundColor: AppColors.surface,
-        elevation: 0,
-        automaticallyImplyLeading: false,
-        title: const Text(
-          'Kalender',
-          style: TextStyle(
-            color: AppColors.textPrimary,
-            fontWeight: FontWeight.bold,
-            fontSize: 16,
-          ),
-        ),
-        actions: [
-          IconButton(
-            tooltip: 'Ke hari ini',
-            splashRadius: 20,
-            padding: const EdgeInsets.all(8),
-            constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
-            onPressed: () {
-              final now = DateTime.now();
-              setState(() {
-                _focusedDay = now;
-                _selectedDay = DateTime(now.year, now.month, now.day);
-              });
-            },
-            icon: const Icon(Icons.today_rounded, color: AppColors.textPrimary),
-          ),
-          IconButton(
-            tooltip: 'Pengaturan hari libur',
-            splashRadius: 20,
-            padding: const EdgeInsets.all(8),
-            constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
-            onPressed: _showOffDaySettings,
-            icon: const Icon(
-              Icons.settings_rounded,
+    final safeBottom = MediaQuery.of(context).padding.bottom;
+    final fabBottomOffset = safeBottom + 84.0;
+    final contentBottomPadding = safeBottom + 184.0;
+
+    return GestureDetector(
+      onTap: _closeFab,
+      behavior: HitTestBehavior.translucent,
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        appBar: AppBar(
+          backgroundColor: AppColors.surface,
+          elevation: 0,
+          automaticallyImplyLeading: false,
+          title: const Text(
+            'Kalender',
+            style: TextStyle(
               color: AppColors.textPrimary,
+              fontWeight: FontWeight.bold,
+              fontSize: 16,
             ),
           ),
-          const SizedBox(width: 4),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        heroTag: 'cal-reminder',
-        onPressed: () => _showReminderSheet(date: _selectedDay),
-        backgroundColor: AppColors.primary,
-        foregroundColor: Colors.white,
-        elevation: 2,
-        icon: const Icon(Icons.notifications_active_rounded, size: 18),
-        label: const Text(
-          'Pengingat',
-          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+          actions: [
+            IconButton(
+              tooltip: 'Ke hari ini',
+              splashRadius: 20,
+              padding: const EdgeInsets.all(8),
+              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+              onPressed: () {
+                final now = DateTime.now();
+                setState(() {
+                  _focusedDay = now;
+                  _selectedDay = DateTime(now.year, now.month, now.day);
+                });
+              },
+              icon: const Icon(
+                Icons.today_rounded,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            IconButton(
+              tooltip: 'Pengaturan hari libur',
+              splashRadius: 20,
+              padding: const EdgeInsets.all(8),
+              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+              onPressed: _showOffDaySettings,
+              icon: const Icon(
+                Icons.settings_rounded,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(width: 4),
+          ],
+        ),
+        floatingActionButton: Padding(
+          padding: EdgeInsets.only(bottom: fabBottomOffset),
+          child: _buildFabMenu(),
+        ),
+        floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
+        body: ListenableBuilder(
+          listenable: _store,
+          builder: (context, _) {
+            return ListView(
+              padding: EdgeInsets.fromLTRB(12, 12, 12, contentBottomPadding),
+              children: [
+                _buildMonthSummary(),
+                const SizedBox(height: 12),
+                _buildCalendarCard(),
+                const SizedBox(height: 12),
+                _buildLegend(),
+                const SizedBox(height: 12),
+                _buildDayDetail(),
+              ],
+            );
+          },
         ),
       ),
-      body: ListenableBuilder(
-        listenable: _store,
-        builder: (context, _) {
-          return ListView(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 100),
+    );
+  }
+
+  // ─── FLOATING BUBBLE MENU ─────────────────────────────────────────────────
+
+  Widget _buildFabMenu() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        // Child bubbles
+        ScaleTransition(
+          scale: _fabScale,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              _buildMonthSummary(),
-              const SizedBox(height: 12),
-              _buildCalendarCard(),
-              const SizedBox(height: 12),
-              _buildLegend(),
-              const SizedBox(height: 12),
-              _buildDayDetail(),
+              _childBubble(
+                icon: Icons.notifications_active_rounded,
+                label: 'Reminder',
+                onTap: () {
+                  _closeFab();
+                  _showReminderSheet(date: _selectedDay);
+                },
+              ),
+              const SizedBox(height: 10),
+              _childBubble(
+                icon: Icons.edit_calendar_rounded,
+                label: 'Kegiatan Manual',
+                onTap: () {
+                  _closeFab();
+                  _showManualActivitySheet(date: _selectedDay);
+                },
+              ),
+              const SizedBox(height: 14),
             ],
-          );
-        },
+          ),
+        ),
+        // Main bubble
+        GestureDetector(
+          onTap: _toggleFab,
+          child: Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              color: AppColors.primary,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.primary.withValues(alpha: 0.35),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: RotationTransition(
+              turns: _fabRotate,
+              child: const Icon(
+                Icons.add_rounded,
+                color: Colors.white,
+                size: 26,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _childBubble({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: AppColors.border),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.06),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: AppColors.primaryLight,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.06),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Icon(icon, color: AppColors.primary, size: 18),
+          ),
+        ],
       ),
     );
   }
@@ -312,12 +486,16 @@ class _CalendarScreenState extends State<CalendarScreen> {
         },
         onFormatChanged: (f) => setState(() => _calendarFormat = f),
         onDaySelected: (selected, focused) {
+          _closeFab();
           setState(() {
             _selectedDay = selected;
             _focusedDay = focused;
           });
         },
-        onPageChanged: (focused) => setState(() => _focusedDay = focused),
+        onPageChanged: (focused) {
+          setState(() => _focusedDay = focused);
+          _store.loadMonth(focused.year, focused.month);
+        },
         startingDayOfWeek: StartingDayOfWeek.monday,
         headerStyle: const HeaderStyle(
           titleCentered: true,
@@ -400,7 +578,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
       ),
       child: Stack(
         children: [
-          // Day number
           Center(
             child: Text(
               '${day.day}',
@@ -413,8 +590,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
               ),
             ),
           ),
-
-          // Status icon (bottom center)
           if (cellStyle.icon != null && !isSelected)
             Positioned(
               bottom: 2,
@@ -424,8 +599,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 child: Icon(cellStyle.icon, size: 9, color: cellStyle.border),
               ),
             ),
-
-          // Reminder badge (top-right)
           if (reminderCount > 0)
             Positioned(
               top: 1,
@@ -440,17 +613,15 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 child: Center(
                   child: Text(
                     '$reminderCount',
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontSize: 8,
                       fontWeight: FontWeight.bold,
-                      color: isSelected ? Colors.white : Colors.white,
+                      color: Colors.white,
                     ),
                   ),
                 ),
               ),
             ),
-
-          // Worklog dots (bottom-left)
           if (worklogCount > 0 && !isSelected)
             Positioned(
               bottom: 2,
@@ -589,24 +760,19 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ),
           const Divider(height: 1, color: AppColors.border),
 
-          // Attendance section
           _buildAttendanceSection(record, state, day),
 
-          // Worklog section
           if (worklogs.isNotEmpty) ...[
             const Divider(height: 1, color: AppColors.border),
             _buildWorklogSection(worklogs),
           ],
 
-          // Reminder section
           if (reminders.isNotEmpty) ...[
             const Divider(height: 1, color: AppColors.border),
             _buildReminderSection(reminders),
           ],
 
           const Divider(height: 1, color: AppColors.border),
-
-          // Action row
           _buildActionRow(record, day),
         ],
       ),
@@ -655,33 +821,29 @@ class _CalendarScreenState extends State<CalendarScreen> {
                       ),
                     ),
                     const SizedBox(height: 2),
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: record.source == AttendanceSource.face
-                                ? AppColors.primaryLight
-                                : AppColors.warningLight,
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            record.source == AttendanceSource.face
-                                ? 'Face'
-                                : 'Manual',
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                              color: record.source == AttendanceSource.face
-                                  ? AppColors.primary
-                                  : AppColors.warning,
-                            ),
-                          ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: record.source == AttendanceSource.face
+                            ? AppColors.primaryLight
+                            : AppColors.warningLight,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        record.source == AttendanceSource.face
+                            ? 'Face'
+                            : 'Manual',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: record.source == AttendanceSource.face
+                              ? AppColors.primary
+                              : AppColors.warning,
                         ),
-                      ],
+                      ),
                     ),
                   ],
                 ),
@@ -988,6 +1150,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                           onTap: () {
                             _store.removeReminder(r);
                             NotificationService.instance.cancelReminder(r);
+                            _syncReminderDelete(r);
                           },
                           child: const Icon(
                             Icons.close_rounded,
@@ -1127,6 +1290,62 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ],
         ],
       ),
+    );
+  }
+
+  // ─── MANUAL ACTIVITY SHEET (new worklog from calendar) ────────────────────
+
+  void _showManualActivitySheet({required DateTime date}) async {
+    final uid = AuthService.instance.currentUserId;
+    if (uid == null) return;
+
+    List<Project> projects = [];
+    bool loadingProjects = true;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return _ManualActivitySheet(
+          initialDate: date,
+          userId: uid,
+          projects: projects,
+          loadingProjects: loadingProjects,
+          onFetchProjects: () => ProjectService.instance.fetchProjects(uid),
+          onSave: (entry) async {
+            try {
+              final saved = await WorklogService.instance.createWorklog(
+                entry,
+                uid,
+              );
+              _store.addWorklog(saved);
+              if (ctx.mounted) Navigator.pop(ctx);
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    backgroundColor: AppColors.success,
+                    duration: Duration(seconds: 2),
+                    content: Text('Kegiatan berhasil disimpan'),
+                  ),
+                );
+              }
+            } catch (_) {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    backgroundColor: AppColors.error,
+                    content: Text('Gagal menyimpan kegiatan. Coba lagi.'),
+                  ),
+                );
+              }
+            }
+          },
+        );
+      },
     );
   }
 
@@ -1308,7 +1527,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  // ─── MANUAL ENTRY MODAL ───────────────────────────────────────────────────
+  // ─── MANUAL ENTRY MODAL (attendance) ──────────────────────────────────────
 
   void _showManualEntryModal({
     DateTime? preselected,
@@ -1799,8 +2018,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   width: double.infinity,
                   height: 48,
                   child: ElevatedButton(
-                    onPressed: () {
+                    onPressed: () async {
                       if (titleCtrl.text.trim().isEmpty) return;
+                      final uid = AuthService.instance.currentUserId;
+                      if (uid == null) return;
+
                       final event = ReminderEvent(
                         id:
                             existing?.id ??
@@ -1815,13 +2037,31 @@ class _CalendarScreenState extends State<CalendarScreen> {
                             ? [15]
                             : offsets,
                       );
-                      if (existing != null) {
-                        _store.updateReminder(event);
-                      } else {
-                        _store.addReminder(event);
+
+                      try {
+                        if (existing != null) {
+                          final updated = await ReminderService.instance
+                              .upsertReminder(event, uid);
+                          _store.updateReminder(updated);
+                        } else {
+                          final saved = await ReminderService.instance
+                              .upsertReminder(event, uid);
+                          _store.addReminder(saved);
+                        }
+                        NotificationService.instance.scheduleReminder(event);
+                        if (ctx.mounted) Navigator.pop(ctx);
+                      } catch (_) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              backgroundColor: AppColors.error,
+                              content: Text(
+                                'Gagal menyimpan pengingat. Coba lagi.',
+                              ),
+                            ),
+                          );
+                        }
                       }
-                      NotificationService.instance.scheduleReminder(event);
-                      Navigator.pop(ctx);
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primary,
@@ -2027,38 +2267,48 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   // ─── CRUD ─────────────────────────────────────────────────────────────────
 
-  void _markAttendance(
+  Future<void> _markAttendance(
     DateTime date,
     AttendanceStatus status, {
     TimeOfDay? checkIn,
     TimeOfDay? checkOut,
     String? note,
     AttendanceRecord? existing,
-  }) {
+  }) async {
+    final uid = AuthService.instance.currentUserId;
+    if (uid == null) return;
     final d = DateTime(date.year, date.month, date.day);
-    _store.setAttendance(
-      AttendanceRecord(
-        id: existing?.id ?? d.millisecondsSinceEpoch.toString(),
-        date: d,
-        source: AttendanceSource.manual,
-        status: status,
-        checkIn: checkIn,
-        checkOut: checkOut,
-        note: note,
-      ),
+    final record = AttendanceRecord(
+      id: existing?.id ?? d.millisecondsSinceEpoch.toString(),
+      date: d,
+      source: AttendanceSource.manual,
+      status: status,
+      checkIn: checkIn,
+      checkOut: checkOut,
+      note: note,
     );
+    try {
+      final saved = await AttendanceService.instance.upsertRecord(record, uid);
+      _store.setAttendance(saved);
+      NotificationProvider.instance.refresh();
+    } catch (_) {
+      _store.setAttendance(record);
+      NotificationProvider.instance.refresh();
+    }
     setState(() {
       _selectedDay = d;
       _focusedDay = d;
     });
     final style = _attendanceStyle(status);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        backgroundColor: style.color,
-        duration: const Duration(seconds: 2),
-        content: Text('Ditandai sebagai ${style.label} · ${_dateFull(d)}'),
-      ),
-    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: style.color,
+          duration: const Duration(seconds: 2),
+          content: Text('Ditandai sebagai ${style.label} · ${_dateFull(d)}'),
+        ),
+      );
+    }
   }
 
   void _confirmDelete(DateTime date) {
@@ -2077,9 +2327,15 @@ class _CalendarScreenState extends State<CalendarScreen> {
             child: const Text('Batal'),
           ),
           ElevatedButton(
-            onPressed: () {
-              _store.removeAttendance(date);
+            onPressed: () async {
               Navigator.pop(ctx);
+              final uid = AuthService.instance.currentUserId;
+              if (uid == null) return;
+              try {
+                await AttendanceService.instance.deleteRecord(uid, date);
+              } catch (_) {}
+              _store.removeAttendance(date);
+              NotificationProvider.instance.refresh();
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.error,
@@ -2091,6 +2347,15 @@ class _CalendarScreenState extends State<CalendarScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _syncReminderDelete(ReminderEvent r) async {
+    final uid = AuthService.instance.currentUserId;
+    if (uid == null) return;
+    try {
+      await ReminderService.instance.deleteReminder(r.id, uid);
+      NotificationProvider.instance.refresh();
+    } catch (_) {}
   }
 
   // ─── HELPERS ──────────────────────────────────────────────────────────────
@@ -2252,6 +2517,478 @@ class _CalendarScreenState extends State<CalendarScreen> {
     ];
     const days = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'];
     return '${days[d.weekday - 1]}, ${d.day} ${months[d.month - 1]} ${d.year}';
+  }
+}
+
+// ─── MANUAL ACTIVITY SHEET WIDGET ─────────────────────────────────────────────
+
+class _ManualActivitySheet extends StatefulWidget {
+  final DateTime initialDate;
+  final String userId;
+  final List<Project> projects;
+  final bool loadingProjects;
+  final Future<List<Project>> Function() onFetchProjects;
+  final Future<void> Function(WorklogEntry entry) onSave;
+
+  const _ManualActivitySheet({
+    required this.initialDate,
+    required this.userId,
+    required this.projects,
+    required this.loadingProjects,
+    required this.onFetchProjects,
+    required this.onSave,
+  });
+
+  @override
+  State<_ManualActivitySheet> createState() => _ManualActivitySheetState();
+}
+
+class _ManualActivitySheetState extends State<_ManualActivitySheet> {
+  late DateTime _date;
+  final _taskCtrl = TextEditingController();
+  final _notesCtrl = TextEditingController();
+  TimeOfDay? _startTime;
+  TimeOfDay? _endTime;
+  Project? _selectedProject;
+  List<Project> _projects = [];
+  bool _loadingProjects = true;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _date = widget.initialDate;
+    _loadProjects();
+  }
+
+  @override
+  void dispose() {
+    _taskCtrl.dispose();
+    _notesCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadProjects() async {
+    try {
+      final list = await widget.onFetchProjects();
+      if (mounted) {
+        setState(() {
+          _projects = list;
+          _loadingProjects = false;
+          if (list.isNotEmpty) _selectedProject = list.first;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loadingProjects = false);
+    }
+  }
+
+  String _duration() {
+    if (_startTime == null || _endTime == null) return '';
+    final mins =
+        (_endTime!.hour * 60 + _endTime!.minute) -
+        (_startTime!.hour * 60 + _startTime!.minute);
+    if (mins <= 0) return '';
+    final h = mins ~/ 60;
+    final m = mins % 60;
+    return h > 0 ? '${h}j ${m.toString().padLeft(2, '0')}m' : '${m}m';
+  }
+
+  String _fmtTod(TimeOfDay t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+
+  String _dateFull(DateTime d) {
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'Mei',
+      'Jun',
+      'Jul',
+      'Agu',
+      'Sep',
+      'Okt',
+      'Nov',
+      'Des',
+    ];
+    const days = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'];
+    return '${days[d.weekday - 1]}, ${d.day} ${months[d.month - 1]} ${d.year}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dur = _duration();
+
+    return Padding(
+      padding: EdgeInsets.only(
+        top: 12,
+        left: 20,
+        right: 20,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Handle
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.border,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            // Title
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppColors.primaryLight,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(
+                    Icons.edit_calendar_rounded,
+                    color: AppColors.primary,
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                const Text(
+                  'Tambah Kegiatan Manual',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 18),
+
+            // Nama tugas
+            _label('Nama Tugas*'),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _taskCtrl,
+              decoration: _inputDeco('Mis. Desain halaman login'),
+            ),
+            const SizedBox(height: 14),
+
+            // Tanggal
+            _label('Tanggal'),
+            const SizedBox(height: 6),
+            InkWell(
+              onTap: () async {
+                final picked = await showDatePicker(
+                  context: context,
+                  initialDate: _date,
+                  firstDate: DateTime(2024),
+                  lastDate: DateTime(2030),
+                );
+                if (picked != null) setState(() => _date = picked);
+              },
+              borderRadius: BorderRadius.circular(10),
+              child: _fieldBox(
+                icon: Icons.calendar_today_rounded,
+                text: _dateFull(_date),
+              ),
+            ),
+            const SizedBox(height: 14),
+
+            // Waktu
+            Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _label('Mulai'),
+                      const SizedBox(height: 6),
+                      _timeBtn(
+                        _startTime,
+                        (t) => setState(() => _startTime = t),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _label('Selesai'),
+                      const SizedBox(height: 6),
+                      _timeBtn(_endTime, (t) => setState(() => _endTime = t)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            if (dur.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 7,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.primaryLight,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.schedule_rounded,
+                      size: 13,
+                      color: AppColors.primary,
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      'Durasi: $dur',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            const SizedBox(height: 14),
+
+            // Proyek
+            _label('Proyek'),
+            const SizedBox(height: 6),
+            if (_loadingProjects)
+              const SizedBox(
+                height: 48,
+                child: Center(
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              )
+            else if (_projects.isEmpty)
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColors.background,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: const Text(
+                  'Belum ada proyek. Buat proyek di Tracker.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              )
+            else
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(
+                  color: AppColors.background,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<Project>(
+                    value: _selectedProject,
+                    isExpanded: true,
+                    icon: const Icon(
+                      Icons.keyboard_arrow_down_rounded,
+                      color: AppColors.textSecondary,
+                    ),
+                    items: _projects.map((p) {
+                      return DropdownMenuItem(
+                        value: p,
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 10,
+                              height: 10,
+                              decoration: BoxDecoration(
+                                color: p.color,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Text(
+                              p.name,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                color: AppColors.textPrimary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }).toList(),
+                    onChanged: (v) {
+                      if (v != null) setState(() => _selectedProject = v);
+                    },
+                  ),
+                ),
+              ),
+            const SizedBox(height: 14),
+
+            // Catatan
+            _label('Catatan (opsional)'),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _notesCtrl,
+              maxLines: 2,
+              decoration: _inputDeco('Tambahkan catatan...'),
+            ),
+            const SizedBox(height: 20),
+
+            // Save
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: ElevatedButton(
+                onPressed: _saving ? null : _save,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: _saving
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Text(
+                        'Simpan Kegiatan',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14,
+                        ),
+                      ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _save() async {
+    if (_taskCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nama tugas tidak boleh kosong')),
+      );
+      return;
+    }
+
+    setState(() => _saving = true);
+
+    final entry = WorklogEntry(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      date: DateTime(_date.year, _date.month, _date.day),
+      taskName: _taskCtrl.text.trim(),
+      projectName: _selectedProject?.name ?? 'Tanpa Proyek',
+      projectColor: _selectedProject?.color ?? AppColors.textSecondary,
+      startTime: _startTime,
+      endTime: _endTime,
+      duration: _duration(),
+    );
+
+    await widget.onSave(entry);
+
+    if (mounted) setState(() => _saving = false);
+  }
+
+  Widget _label(String text) => Text(
+    text,
+    style: const TextStyle(
+      fontSize: 12,
+      fontWeight: FontWeight.w600,
+      color: AppColors.textSecondary,
+    ),
+  );
+
+  InputDecoration _inputDeco(String hint) => InputDecoration(
+    hintText: hint,
+    hintStyle: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+    filled: true,
+    fillColor: AppColors.background,
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(10),
+      borderSide: const BorderSide(color: AppColors.border),
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(10),
+      borderSide: const BorderSide(color: AppColors.border),
+    ),
+    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+  );
+
+  Widget _fieldBox({required IconData icon, required String text}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: AppColors.textSecondary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                fontSize: 13,
+                color: AppColors.textPrimary,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _timeBtn(TimeOfDay? value, ValueChanged<TimeOfDay> onPick) {
+    return InkWell(
+      onTap: () async {
+        final picked = await showTimePicker(
+          context: context,
+          initialTime: value ?? TimeOfDay.now(),
+          builder: (c, child) => MediaQuery(
+            data: MediaQuery.of(c).copyWith(alwaysUse24HourFormat: true),
+            child: child!,
+          ),
+        );
+        if (picked != null) onPick(picked);
+      },
+      borderRadius: BorderRadius.circular(10),
+      child: _fieldBox(
+        icon: Icons.access_time_rounded,
+        text: value == null ? '--:--' : _fmtTod(value),
+      ),
+    );
   }
 }
 

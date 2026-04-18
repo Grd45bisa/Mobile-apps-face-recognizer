@@ -2,7 +2,11 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 
 import '../../../shared/models/app_models.dart';
-import '../../../shared/store/app_store.dart';
+import '../../../shared/services/attendance_service.dart';
+import '../../../shared/services/auth_service.dart';
+import '../../../shared/services/reminder_service.dart';
+import '../../../shared/services/schedule_settings_service.dart';
+import '../../../shared/services/worklog_service.dart';
 import '../../../shared/theme/app_colors.dart';
 
 class ReportScreen extends StatefulWidget {
@@ -13,9 +17,18 @@ class ReportScreen extends StatefulWidget {
 }
 
 class _ReportScreenState extends State<ReportScreen> {
-  final _store = AppStore.instance;
+  final _authService = AuthService.instance;
+  final _attendanceService = AttendanceService.instance;
+  final _reminderService = ReminderService.instance;
+  final _worklogService = WorklogService.instance;
+  final _settingsService = ScheduleSettingsService.instance;
+
   late DateTime _rangeStart;
   late DateTime _rangeEnd;
+  late _ReportRangeData _reportData;
+
+  bool _isLoading = true;
+  String? _errorMessage;
 
   @override
   void initState() {
@@ -23,10 +36,15 @@ class _ReportScreenState extends State<ReportScreen> {
     final now = DateTime.now();
     _rangeStart = DateTime(now.year, now.month, 1);
     _rangeEnd = DateTime(now.year, now.month, now.day);
+    _reportData = _ReportRangeData.empty(_rangeStart, _rangeEnd);
+    _loadReportData();
   }
 
   @override
   Widget build(BuildContext context) {
+    final safeBottom = MediaQuery.of(context).padding.bottom;
+    final contentBottomPadding = safeBottom + 112.0;
+
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -56,31 +74,115 @@ class _ReportScreenState extends State<ReportScreen> {
           const SizedBox(width: 4),
         ],
       ),
-      body: ListenableBuilder(
-        listenable: _store,
-        builder: (context, _) {
-          final data = _reportDataForRange(_rangeStart, _rangeEnd);
-
-          return SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildHeroCard(data),
-                const SizedBox(height: 14),
-                _buildRangeFilterCard(),
-                const SizedBox(height: 14),
-                _buildStatsGrid(data),
-                const SizedBox(height: 14),
-                _buildBarChartCard(data),
-                const SizedBox(height: 14),
-                _buildDistributionCard(data),
-                const SizedBox(height: 14),
-                _buildInsightCard(data),
+      body: RefreshIndicator(
+        onRefresh: _loadReportData,
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: EdgeInsets.fromLTRB(16, 14, 16, contentBottomPadding),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (_isLoading) ...[
+                const LinearProgressIndicator(minHeight: 3),
+                const SizedBox(height: 12),
               ],
+              if (_errorMessage != null) ...[
+                _buildStatusCard(
+                  title: 'Data laporan belum sepenuhnya tersedia',
+                  message: _errorMessage!,
+                  icon: Icons.cloud_off_rounded,
+                  color: AppColors.warning,
+                  actionLabel: 'Coba Lagi',
+                  onAction: _loadReportData,
+                ),
+                const SizedBox(height: 14),
+              ],
+              _buildHeroCard(_reportData),
+              const SizedBox(height: 14),
+              _buildRangeFilterCard(),
+              const SizedBox(height: 14),
+              _buildStatsGrid(_reportData),
+              const SizedBox(height: 14),
+              _buildBarChartCard(_reportData),
+              const SizedBox(height: 14),
+              _buildDistributionCard(_reportData),
+              const SizedBox(height: 14),
+              _buildInsightCard(_reportData),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatusCard({
+    required String title,
+    required String message,
+    required IconData icon,
+    required Color color,
+    String? actionLabel,
+    VoidCallback? onAction,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, size: 18, color: color),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            message,
+            style: const TextStyle(
+              fontSize: 11,
+              color: AppColors.textSecondary,
+              height: 1.4,
             ),
-          );
-        },
+          ),
+          if (actionLabel != null && onAction != null) ...[
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: onAction,
+              style: TextButton.styleFrom(
+                foregroundColor: AppColors.primary,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 8,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              child: Text(actionLabel),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -355,7 +457,7 @@ class _ReportScreenState extends State<ReportScreen> {
           'Rata-rata',
           data.averageWorkHoursLabel,
           Icons.insights_rounded,
-          const Color(0xFF7C3AED),
+          AppColors.primaryDark,
           'Jam kerja rata-rata per hari aktif',
         ),
       ],
@@ -767,7 +869,9 @@ class _ReportScreenState extends State<ReportScreen> {
       firstDate: DateTime(2024),
       lastDate: DateTime(2030),
     );
-    if (picked == null) return;
+    if (picked == null) {
+      return;
+    }
 
     setState(() {
       if (isStart) {
@@ -781,18 +885,87 @@ class _ReportScreenState extends State<ReportScreen> {
           _rangeStart = _rangeEnd;
         }
       }
+      _reportData = _ReportRangeData.empty(_rangeStart, _rangeEnd);
     });
+
+    await _loadReportData();
   }
 
-  _ReportRangeData _reportDataForRange(DateTime start, DateTime end) {
+  Future<void> _loadReportData() async {
+    if (mounted) {
+      setState(() {
+        _isLoading = true;
+        _errorMessage = null;
+      });
+    }
+
+    try {
+      final userId = _authService.currentUserId;
+      if (userId == null) {
+        throw Exception('Belum ada sesi login aktif untuk mengambil laporan.');
+      }
+
+      final results = await Future.wait([
+        _settingsService.fetchSettings(userId),
+        _attendanceService.fetchRecordsInRange(userId, _rangeStart, _rangeEnd),
+        _reminderService.fetchRemindersInRange(userId, _rangeStart, _rangeEnd),
+        _worklogService.fetchWorklogsInRange(userId, _rangeStart, _rangeEnd),
+      ]);
+
+      final settings = results[0] as WorkScheduleSettings;
+      final attendance = results[1] as List<AttendanceRecord>;
+      final reminders = results[2] as List<ReminderEvent>;
+      final worklogs = results[3] as List<WorklogEntry>;
+
+      final reportData = _reportDataFromSources(
+        start: _rangeStart,
+        end: _rangeEnd,
+        settings: settings,
+        attendance: attendance,
+        reminders: reminders,
+        worklogs: worklogs,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _reportData = reportData;
+        _isLoading = false;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _reportData = _ReportRangeData.empty(_rangeStart, _rangeEnd);
+        _errorMessage = _friendlyError(error);
+        _isLoading = false;
+      });
+    }
+  }
+
+  _ReportRangeData _reportDataFromSources({
+    required DateTime start,
+    required DateTime end,
+    required WorkScheduleSettings settings,
+    required List<AttendanceRecord> attendance,
+    required List<ReminderEvent> reminders,
+    required List<WorklogEntry> worklogs,
+  }) {
     final startDate = _normalizeDate(start);
     final endDate = _normalizeDate(end);
+
+    final attendanceByDate = <String, AttendanceRecord>{
+      for (final record in attendance) _dateKey(record.date): record,
+    };
 
     int workdayTarget = 0;
     int presentDays = 0;
     int missingDays = 0;
     int offDays = 0;
-    int reminders = 0;
     int onTimeCount = 0;
     int daysWithCheckIn = 0;
 
@@ -801,10 +974,18 @@ class _ReportScreenState extends State<ReportScreen> {
       !date.isAfter(endDate);
       date = date.add(const Duration(days: 1))
     ) {
-      final isOffDay = _store.settings.offDays.contains(date.weekday);
-      if (!isOffDay) workdayTarget++;
+      final isOffDay = settings.offDays.contains(date.weekday);
+      if (!isOffDay) {
+        workdayTarget++;
+      }
 
-      switch (_store.dayStateOf(date)) {
+      final dayState = _dayStateOf(
+        day: date,
+        settings: settings,
+        record: attendanceByDate[_dateKey(date)],
+      );
+
+      switch (dayState) {
         case DayDisplayState.presentWorkday:
         case DayDisplayState.workedOnOffDay:
           presentDays++;
@@ -815,30 +996,25 @@ class _ReportScreenState extends State<ReportScreen> {
         case DayDisplayState.offDay:
           offDays++;
           break;
-        default:
+        case DayDisplayState.manualException:
+        case DayDisplayState.futureDay:
           break;
       }
 
-      reminders += _store.remindersOf(date).length;
-
-      final record = _store.attendanceOf(date);
+      final record = attendanceByDate[_dateKey(date)];
       if (record?.checkIn != null) {
         daysWithCheckIn++;
         final checkIn = record!.checkIn!;
         final isOnTime =
             checkIn.hour < 8 || (checkIn.hour == 8 && checkIn.minute <= 15);
-        if (isOnTime) onTimeCount++;
+        if (isOnTime) {
+          onTimeCount++;
+        }
       }
     }
 
-    final rangeLogs = <WorklogEntry>[
-      for (final entry in _store.allWorklogs.entries)
-        ...entry.value.where(
-          (worklog) =>
-              !_normalizeDate(worklog.date).isBefore(startDate) &&
-              !_normalizeDate(worklog.date).isAfter(endDate),
-        ),
-    ]..sort((a, b) => a.date.compareTo(b.date));
+    final sortedWorklogs = [...worklogs]
+      ..sort((a, b) => a.date.compareTo(b.date));
 
     Duration totalWorkDuration = Duration.zero;
     final bucketMap = <DateTime, Duration>{};
@@ -851,7 +1027,7 @@ class _ReportScreenState extends State<ReportScreen> {
       bucketMap[bucketStart] = Duration.zero;
     }
 
-    for (final log in rangeLogs) {
+    for (final log in sortedWorklogs) {
       final duration = _worklogDuration(log);
       totalWorkDuration += duration;
 
@@ -878,7 +1054,7 @@ class _ReportScreenState extends State<ReportScreen> {
     }).toList();
 
     final totalDistributionBase =
-        (presentDays + missingDays + offDays + reminders).clamp(1, 9999);
+        (presentDays + missingDays + offDays + reminders.length).clamp(1, 9999);
     final peakBucketHours = buckets.fold<double>(
       0,
       (prev, bucket) => bucket.hours > prev ? bucket.hours : prev,
@@ -895,8 +1071,8 @@ class _ReportScreenState extends State<ReportScreen> {
       workdayTarget: workdayTarget,
       missingDays: missingDays,
       offDays: offDays,
-      reminders: reminders,
-      totalEntries: rangeLogs.length,
+      reminders: reminders.length,
+      totalEntries: sortedWorklogs.length,
       totalWorkDuration: totalWorkDuration,
       onTimeCount: onTimeCount,
       daysWithCheckIn: daysWithCheckIn,
@@ -907,12 +1083,47 @@ class _ReportScreenState extends State<ReportScreen> {
       presentRatio: presentDays / totalDistributionBase,
       missingRatio: missingDays / totalDistributionBase,
       offDayRatio: offDays / totalDistributionBase,
-      reminderRatio: reminders / totalDistributionBase,
+      reminderRatio: reminders.length / totalDistributionBase,
     );
   }
 
+  DayDisplayState _dayStateOf({
+    required DateTime day,
+    required WorkScheduleSettings settings,
+    required AttendanceRecord? record,
+  }) {
+    final todayNorm = _normalizeDate(DateTime.now());
+    final dayNorm = _normalizeDate(day);
+    final isOffDay = settings.offDays.contains(day.weekday);
+    final isFuture = dayNorm.isAfter(todayNorm);
+
+    if (record != null) {
+      if (record.status == AttendanceStatus.present) {
+        return isOffDay
+            ? DayDisplayState.workedOnOffDay
+            : DayDisplayState.presentWorkday;
+      }
+      return DayDisplayState.manualException;
+    }
+
+    if (isOffDay) {
+      return DayDisplayState.offDay;
+    }
+    if (isFuture) {
+      return DayDisplayState.futureDay;
+    }
+
+    final isToday = dayNorm == todayNorm;
+    if (!isToday && settings.autoMarkMissingAttendance) {
+      return DayDisplayState.missingAttendance;
+    }
+    return DayDisplayState.futureDay;
+  }
+
   Duration _worklogDuration(WorklogEntry entry) {
-    if (entry.startTime == null || entry.endTime == null) return Duration.zero;
+    if (entry.startTime == null || entry.endTime == null) {
+      return Duration.zero;
+    }
 
     final start = DateTime(
       entry.date.year,
@@ -928,12 +1139,28 @@ class _ReportScreenState extends State<ReportScreen> {
       entry.endTime!.hour,
       entry.endTime!.minute,
     );
-    if (end.isBefore(start)) end = end.add(const Duration(days: 1));
+    if (end.isBefore(start)) {
+      end = end.add(const Duration(days: 1));
+    }
     return end.difference(start);
   }
 
   DateTime _normalizeDate(DateTime date) =>
       DateTime(date.year, date.month, date.day);
+
+  String _dateKey(DateTime date) =>
+      '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+
+  String _friendlyError(Object error) {
+    final message = error.toString();
+    if (message.contains('Belum ada sesi login aktif')) {
+      return 'Login dulu supaya data laporan bisa ditarik dari database.';
+    }
+    if (message.contains('Supabase') || message.contains('Client')) {
+      return 'Koneksi database belum siap. Coba jalankan ulang aplikasi atau periksa konfigurasi Supabase.';
+    }
+    return 'Gagal memuat data laporan dari database. Tarik layar ke bawah untuk mencoba lagi.';
+  }
 
   String _dateShort(DateTime date) {
     const months = [
@@ -980,8 +1207,12 @@ class _ReportScreenState extends State<ReportScreen> {
   String _formatDurationCompact(Duration duration) {
     final hours = duration.inHours;
     final minutes = duration.inMinutes % 60;
-    if (hours == 0) return '${minutes}m';
-    if (minutes == 0) return '${hours}j';
+    if (hours == 0) {
+      return '${minutes}m';
+    }
+    if (minutes == 0) {
+      return '${hours}j';
+    }
     return '${hours}j ${minutes.toString().padLeft(2, '0')}m';
   }
 
@@ -1040,30 +1271,75 @@ class _ReportRangeData {
     required this.reminderRatio,
   });
 
+  factory _ReportRangeData.empty(DateTime startDate, DateTime endDate) {
+    final normalizedStart = DateTime(
+      startDate.year,
+      startDate.month,
+      startDate.day,
+    );
+    final normalizedEnd = DateTime(endDate.year, endDate.month, endDate.day);
+
+    return _ReportRangeData(
+      startDate: normalizedStart,
+      endDate: normalizedEnd,
+      presentDays: 0,
+      workdayTarget: 0,
+      missingDays: 0,
+      offDays: 0,
+      reminders: 0,
+      totalEntries: 0,
+      totalWorkDuration: Duration.zero,
+      onTimeCount: 0,
+      daysWithCheckIn: 0,
+      totalDays: normalizedEnd.difference(normalizedStart).inDays + 1,
+      buckets: [
+        _RangeBucket(start: normalizedStart, end: normalizedEnd, hours: 0),
+      ],
+      peakBucketHours: 0,
+      peakBucketLabel: '-',
+      presentRatio: 0,
+      missingRatio: 0,
+      offDayRatio: 0,
+      reminderRatio: 0,
+    );
+  }
+
   String get attendanceRateLabel {
-    if (workdayTarget == 0) return '0%';
+    if (workdayTarget == 0) {
+      return '0%';
+    }
     return '${((presentDays / workdayTarget) * 100).round()}%';
   }
 
   String get punctualityLabel {
-    if (daysWithCheckIn == 0) return '0%';
+    if (daysWithCheckIn == 0) {
+      return '0%';
+    }
     return '${((onTimeCount / daysWithCheckIn) * 100).round()}%';
   }
 
   String get averageWorkHoursLabel {
-    if (presentDays == 0 || totalWorkDuration == Duration.zero) return '0j';
+    if (presentDays == 0 || totalWorkDuration == Duration.zero) {
+      return '0j';
+    }
     final avgMinutes = totalWorkDuration.inMinutes / presentDays;
     final hours = avgMinutes ~/ 60;
     final minutes = avgMinutes.round() % 60;
-    if (hours == 0) return '${minutes}m';
+    if (hours == 0) {
+      return '${minutes}m';
+    }
     return '${hours}j ${minutes.toString().padLeft(2, '0')}m';
   }
 
   String get peakBucketHoursLabel {
     final wholeHours = peakBucketHours.floor();
     final minutes = ((peakBucketHours - wholeHours) * 60).round();
-    if (peakBucketHours == 0) return '0j';
-    if (minutes == 0) return '${wholeHours}j';
+    if (peakBucketHours == 0) {
+      return '0j';
+    }
+    if (minutes == 0) {
+      return '${wholeHours}j';
+    }
     return '${wholeHours}j ${minutes.toString().padLeft(2, '0')}m';
   }
 }

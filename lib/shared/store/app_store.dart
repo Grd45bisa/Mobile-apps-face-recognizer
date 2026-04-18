@@ -1,10 +1,24 @@
 import 'package:flutter/material.dart';
 import '../models/app_models.dart';
+import '../services/attendance_service.dart';
+import '../services/worklog_service.dart';
+import '../services/reminder_service.dart';
+import '../services/schedule_settings_service.dart';
+import '../services/profile_service.dart';
+import '../services/auth_service.dart';
 
 class AppStore extends ChangeNotifier {
   static final AppStore instance = AppStore._();
-  AppStore._() {
-    _seed();
+  AppStore._();
+
+  // ─── PROFILE ──────────────────────────────────────────────────────────────
+
+  EmployeeProfile? _profile;
+  EmployeeProfile? get profile => _profile;
+
+  void setProfile(EmployeeProfile profile) {
+    _profile = profile;
+    notifyListeners();
   }
 
   // ─── SETTINGS ─────────────────────────────────────────────────────────────
@@ -15,6 +29,13 @@ class AppStore extends ChangeNotifier {
   void updateSettings(WorkScheduleSettings s) {
     _settings = s;
     notifyListeners();
+    _persistSettings();
+  }
+
+  Future<void> _persistSettings() async {
+    final uid = AuthService.instance.currentUserId;
+    if (uid == null) return;
+    await ScheduleSettingsService.instance.saveSettings(uid, _settings);
   }
 
   // ─── ATTENDANCE ───────────────────────────────────────────────────────────
@@ -47,10 +68,10 @@ class AppStore extends ChangeNotifier {
       List.unmodifiable(_worklogs[dateKey(d)] ?? []);
 
   Map<String, List<WorklogEntry>> get allWorklogs => Map.unmodifiable(
-    _worklogs.map(
-      (key, value) => MapEntry(key, List<WorklogEntry>.unmodifiable(value)),
-    ),
-  );
+        _worklogs.map(
+          (key, value) => MapEntry(key, List<WorklogEntry>.unmodifiable(value)),
+        ),
+      );
 
   void addWorklog(WorklogEntry entry) {
     final key = dateKey(entry.date);
@@ -60,7 +81,8 @@ class AppStore extends ChangeNotifier {
 
   void upsertWorklog(WorklogEntry entry) {
     for (final key in _worklogs.keys.toList()) {
-      final filtered = _worklogs[key]!.where((e) => e.id != entry.id).toList();
+      final filtered =
+          _worklogs[key]!.where((e) => e.id != entry.id).toList();
       if (filtered.length != _worklogs[key]!.length) {
         if (filtered.isEmpty) {
           _worklogs.remove(key);
@@ -69,7 +91,6 @@ class AppStore extends ChangeNotifier {
         }
       }
     }
-
     final key = dateKey(entry.date);
     _worklogs[key] = [...(_worklogs[key] ?? []), entry];
     notifyListeners();
@@ -82,9 +103,9 @@ class AppStore extends ChangeNotifier {
 
   void removeWorklog(String id) {
     var changed = false;
-
     for (final key in _worklogs.keys.toList()) {
-      final filtered = _worklogs[key]!.where((e) => e.id != id).toList();
+      final filtered =
+          _worklogs[key]!.where((e) => e.id != id).toList();
       if (filtered.length != _worklogs[key]!.length) {
         changed = true;
         if (filtered.isEmpty) {
@@ -94,7 +115,6 @@ class AppStore extends ChangeNotifier {
         }
       }
     }
-
     if (changed) notifyListeners();
   }
 
@@ -133,6 +153,93 @@ class AppStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ─── CLOUD LOAD ───────────────────────────────────────────────────────────
+
+  bool _loading = false;
+  bool get isLoading => _loading;
+
+  /// Called once after login. Loads profile, settings, and current-month data.
+  Future<void> loadFromCloud() async {
+    final uid = AuthService.instance.currentUserId;
+    if (uid == null) return;
+
+    _loading = true;
+    notifyListeners();
+
+    try {
+      final now = DateTime.now();
+
+      final results = await Future.wait([
+        ProfileService.instance.ensureProfileExists(
+          AuthService.instance.currentUser!,
+        ),
+        ScheduleSettingsService.instance.fetchSettings(uid),
+        AttendanceService.instance.fetchMonthRecords(uid, now.year, now.month),
+        WorklogService.instance.fetchMonthWorklogs(uid, now.year, now.month),
+        ReminderService.instance.fetchMonthReminders(uid, now.year, now.month),
+      ]);
+
+      _profile = results[0] as EmployeeProfile;
+      _settings = results[1] as WorkScheduleSettings;
+
+      _attendance.clear();
+      for (final r in results[2] as List<AttendanceRecord>) {
+        _attendance[dateKey(r.date)] = r;
+      }
+
+      _worklogs.clear();
+      for (final e in results[3] as List<WorklogEntry>) {
+        final key = dateKey(e.date);
+        _worklogs[key] = [...(_worklogs[key] ?? []), e];
+      }
+
+      _reminders.clear();
+      for (final r in results[4] as List<ReminderEvent>) {
+        final key = dateKey(r.startDateTime);
+        _reminders[key] = [...(_reminders[key] ?? []), r];
+      }
+    } finally {
+      _loading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Reload attendance + worklogs for an arbitrary month (calendar navigation).
+  Future<void> loadMonth(int year, int month) async {
+    final uid = AuthService.instance.currentUserId;
+    if (uid == null) return;
+
+    final results = await Future.wait([
+      AttendanceService.instance.fetchMonthRecords(uid, year, month),
+      WorklogService.instance.fetchMonthWorklogs(uid, year, month),
+      ReminderService.instance.fetchMonthReminders(uid, year, month),
+    ]);
+
+    for (final r in results[0] as List<AttendanceRecord>) {
+      _attendance[dateKey(r.date)] = r;
+    }
+    for (final e in results[1] as List<WorklogEntry>) {
+      final key = dateKey(e.date);
+      _worklogs[key] = [...(_worklogs[key] ?? []), e];
+    }
+    for (final r in results[2] as List<ReminderEvent>) {
+      final key = dateKey(r.startDateTime);
+      _reminders[key] = [...(_reminders[key] ?? []), r];
+    }
+
+    notifyListeners();
+  }
+
+  /// Clear all in-memory state (called on logout).
+  void clear() {
+    _profile = null;
+    _settings = WorkScheduleSettings.defaults();
+    _attendance.clear();
+    _worklogs.clear();
+    _reminders.clear();
+    notifyListeners();
+  }
+
   // ─── DERIVED DAY STATE ────────────────────────────────────────────────────
 
   DayDisplayState dayStateOf(DateTime day) {
@@ -152,14 +259,12 @@ class AppStore extends ChangeNotifier {
     }
 
     if (isOffDay) return DayDisplayState.offDay;
-
     if (isFuture) return DayDisplayState.futureDay;
 
     final isToday = dayNorm == todayNorm;
     if (!isToday && _settings.autoMarkMissingAttendance) {
       return DayDisplayState.missingAttendance;
     }
-
     return DayDisplayState.futureDay;
   }
 
@@ -174,7 +279,6 @@ class AppStore extends ChangeNotifier {
     DateTime month,
   ) {
     int present = 0, missing = 0, offDay = 0, reminders = 0;
-
     final daysInMonth = DateUtils.getDaysInMonth(month.year, month.month);
     final today = _todayNorm();
 
@@ -185,13 +289,10 @@ class AppStore extends ChangeNotifier {
         case DayDisplayState.presentWorkday:
         case DayDisplayState.workedOnOffDay:
           present++;
-          break;
         case DayDisplayState.missingAttendance:
           missing++;
-          break;
         case DayDisplayState.offDay:
           offDay++;
-          break;
         default:
           break;
       }
@@ -216,125 +317,11 @@ class AppStore extends ChangeNotifier {
 
   // ─── WEEK ATTENDANCE ──────────────────────────────────────────────────────
 
-  /// Returns attendance states for Mon–Sun of the week containing [day].
   List<({DateTime date, DayDisplayState state})> weekStatesOf(DateTime day) {
     final monday = day.subtract(Duration(days: day.weekday - 1));
     return List.generate(7, (i) {
       final d = monday.add(Duration(days: i));
       return (date: d, state: dayStateOf(d));
     });
-  }
-
-  // ─── SEED ─────────────────────────────────────────────────────────────────
-
-  void _seed() {
-    final now = DateTime.now();
-
-    void putAttendance(
-      int dayOfMonth,
-      AttendanceStatus s, {
-      TimeOfDay? cin,
-      TimeOfDay? cout,
-      String? note,
-    }) {
-      final d = DateTime(now.year, now.month, dayOfMonth);
-      _attendance[dateKey(d)] = AttendanceRecord(
-        id: 'seed-$dayOfMonth',
-        date: d,
-        source: AttendanceSource.face,
-        status: s,
-        checkIn: cin,
-        checkOut: cout,
-        note: note,
-      );
-    }
-
-    putAttendance(
-      1,
-      AttendanceStatus.present,
-      cin: const TimeOfDay(hour: 8, minute: 5),
-      cout: const TimeOfDay(hour: 17, minute: 10),
-    );
-    putAttendance(
-      2,
-      AttendanceStatus.present,
-      cin: const TimeOfDay(hour: 8, minute: 15),
-      cout: const TimeOfDay(hour: 17, minute: 0),
-    );
-    putAttendance(3, AttendanceStatus.leave, note: 'Urusan keluarga');
-    putAttendance(
-      6,
-      AttendanceStatus.present,
-      cin: const TimeOfDay(hour: 8, minute: 0),
-      cout: const TimeOfDay(hour: 17, minute: 30),
-    );
-    putAttendance(7, AttendanceStatus.sick, note: 'Flu');
-    putAttendance(
-      8,
-      AttendanceStatus.present,
-      cin: const TimeOfDay(hour: 8, minute: 20),
-      cout: const TimeOfDay(hour: 17, minute: 5),
-    );
-    putAttendance(9, AttendanceStatus.training, note: 'Workshop Flutter');
-    putAttendance(10, AttendanceStatus.holiday, note: 'Cuti bersama');
-
-    // Seed today with check-in only
-    final today = DateTime(now.year, now.month, now.day);
-    if (_attendance[dateKey(today)] == null) {
-      _attendance[dateKey(today)] = AttendanceRecord(
-        id: 'today',
-        date: today,
-        source: AttendanceSource.face,
-        status: AttendanceStatus.present,
-        checkIn: const TimeOfDay(hour: 8, minute: 15),
-      );
-    }
-
-    // Seed worklogs for today
-    _worklogs[dateKey(today)] = [
-      WorklogEntry(
-        id: 'wl-1',
-        date: today,
-        taskName: 'Review design mockup',
-        projectName: 'Mobile App',
-        projectColor: const Color(0xFF1565C0),
-        startTime: const TimeOfDay(hour: 9, minute: 0),
-        endTime: const TimeOfDay(hour: 10, minute: 30),
-        duration: '1j 30m',
-      ),
-      WorklogEntry(
-        id: 'wl-2',
-        date: today,
-        taskName: 'Meeting sprint planning',
-        projectName: 'Internal',
-        projectColor: const Color(0xFFFF8F00),
-        startTime: const TimeOfDay(hour: 10, minute: 30),
-        endTime: const TimeOfDay(hour: 12, minute: 30),
-        duration: '2j 00m',
-      ),
-      WorklogEntry(
-        id: 'wl-3',
-        date: today,
-        taskName: 'Update dokumentasi API',
-        projectName: 'Backend',
-        projectColor: const Color(0xFF7B61FF),
-        startTime: const TimeOfDay(hour: 13, minute: 0),
-        endTime: const TimeOfDay(hour: 13, minute: 45),
-        duration: '45m',
-      ),
-    ];
-
-    // Seed reminder for today
-    final todayMeeting = DateTime(now.year, now.month, now.day, 14, 0);
-    _reminders[dateKey(today)] = [
-      ReminderEvent(
-        id: 'rem-1',
-        title: 'Sprint Review',
-        description: 'Demo fitur baru kepada stakeholder',
-        startDateTime: todayMeeting,
-        endDateTime: todayMeeting.add(const Duration(hours: 1)),
-        reminderOffsetsInMinutes: [15, 5],
-      ),
-    ];
   }
 }
