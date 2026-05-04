@@ -442,17 +442,20 @@ class _TrackerScreenState extends State<TrackerScreen> {
       },
     );
 
+    // Capture text before disposing
+    final capturedText = taskController.text.trim();
+    taskController.dispose();
+
     if (!mounted) return;
     if (!saved) {
       setState(() {
-        _taskController.text = taskController.text.trim();
+        _taskController.text = capturedText;
         _activeProject = selectedProject;
         _startTime = start;
         _elapsed = DateTime.now().difference(start);
       });
       _resumeTicker();
     }
-    taskController.dispose();
   }
 
   void _resumeTicker() {

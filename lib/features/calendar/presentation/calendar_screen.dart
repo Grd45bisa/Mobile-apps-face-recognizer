@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
+import 'package:uuid/uuid.dart';
 import '../../../shared/theme/app_colors.dart';
 import '../../../shared/models/app_models.dart';
 import '../../../shared/store/app_store.dart';
@@ -20,6 +21,7 @@ class CalendarScreen extends StatefulWidget {
 
 class _CalendarScreenState extends State<CalendarScreen>
     with SingleTickerProviderStateMixin {
+  static const _uuid = Uuid();
   DateTime _focusedDay = DateTime.now();
   DateTime _selectedDay = DateTime(
     DateTime.now().year,
@@ -1354,12 +1356,13 @@ class _CalendarScreenState extends State<CalendarScreen>
                   ),
                 );
               }
-            } catch (_) {
+            } catch (e) {
               if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
+                  SnackBar(
                     backgroundColor: AppColors.error,
-                    content: Text('Gagal menyimpan kegiatan. Coba lagi.'),
+                    duration: const Duration(seconds: 8),
+                    content: Text('Gagal menyimpan kegiatan: $e'),
                   ),
                 );
               }
@@ -2059,9 +2062,7 @@ class _CalendarScreenState extends State<CalendarScreen>
                       if (uid == null) return;
 
                       final event = ReminderEvent(
-                        id:
-                            existing?.id ??
-                            DateTime.now().millisecondsSinceEpoch.toString(),
+                        id: existing?.id ?? _uuid.v4(),
                         title: titleCtrl.text.trim(),
                         description: descCtrl.text.trim().isEmpty
                             ? null
@@ -2093,13 +2094,14 @@ class _CalendarScreenState extends State<CalendarScreen>
                           }
                           NotificationProvider.instance.refresh();
                         });
-                      } catch (_) {
+                      } catch (e) {
                         if (mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
+                            SnackBar(
                               backgroundColor: AppColors.error,
+                              duration: const Duration(seconds: 8),
                               content: Text(
-                                'Gagal menyimpan pengingat. Coba lagi.',
+                                'Gagal menyimpan pengingat: $e',
                               ),
                             ),
                           );
@@ -2322,7 +2324,7 @@ class _CalendarScreenState extends State<CalendarScreen>
     if (uid == null) return;
     final d = DateTime(date.year, date.month, date.day);
     final record = AttendanceRecord(
-      id: existing?.id ?? d.millisecondsSinceEpoch.toString(),
+      id: existing?.id ?? _uuid.v4(),
       date: d,
       source: AttendanceSource.manual,
       status: status,
@@ -2334,23 +2336,30 @@ class _CalendarScreenState extends State<CalendarScreen>
       final saved = await AttendanceService.instance.upsertRecord(record, uid);
       _store.setAttendance(saved);
       NotificationProvider.instance.refresh();
-    } catch (_) {
-      _store.setAttendance(record);
-      NotificationProvider.instance.refresh();
-    }
-    setState(() {
-      _selectedDay = d;
-      _focusedDay = d;
-    });
-    final style = _attendanceStyle(status);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          backgroundColor: style.color,
-          duration: const Duration(seconds: 2),
-          content: Text('Ditandai sebagai ${style.label} · ${_dateFull(d)}'),
-        ),
-      );
+      setState(() {
+        _selectedDay = d;
+        _focusedDay = d;
+      });
+      final style = _attendanceStyle(status);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: style.color,
+            duration: const Duration(seconds: 2),
+            content: Text('Ditandai sebagai ${style.label} · ${_dateFull(d)}'),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: AppColors.error,
+            duration: const Duration(seconds: 8),
+            content: Text('Gagal menyimpan presensi: $e'),
+          ),
+        );
+      }
     }
   }
 
@@ -2587,6 +2596,7 @@ class _ManualActivitySheet extends StatefulWidget {
 }
 
 class _ManualActivitySheetState extends State<_ManualActivitySheet> {
+  static const _uuid = Uuid();
   late DateTime _date;
   final _taskCtrl = TextEditingController();
   final _notesCtrl = TextEditingController();
@@ -2946,7 +2956,7 @@ class _ManualActivitySheetState extends State<_ManualActivitySheet> {
     setState(() => _saving = true);
 
     final entry = WorklogEntry(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      id: _uuid.v4(),
       date: DateTime(_date.year, _date.month, _date.day),
       taskName: _taskCtrl.text.trim(),
       projectName: _selectedProject?.name ?? 'Tanpa Proyek',

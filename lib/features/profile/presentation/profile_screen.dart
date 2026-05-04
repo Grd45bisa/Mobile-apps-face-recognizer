@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import '../../../shared/models/app_models.dart';
 import '../../../shared/store/app_store.dart';
 import '../../../shared/theme/app_colors.dart';
+import '../../../shared/services/auth_service.dart';
+import '../../../shared/services/face/embedding_sync_service.dart';
+import '../../enrollment/presentation/enrollment_screen.dart';
 import '../controller/profile_controller.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -13,6 +16,35 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> {
   final _controller = ProfileController();
+  bool _isEnrolled = false;
+  bool _enrollChecked = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkEnrollment();
+  }
+
+  Future<void> _checkEnrollment() async {
+    final uid = AuthService.instance.currentUserId;
+    if (uid == null) return;
+    final enrolled = await EmbeddingSyncService.instance.isEnrolledOnCloud(uid);
+    if (!mounted) return;
+    setState(() {
+      _isEnrolled = enrolled;
+      _enrollChecked = true;
+    });
+  }
+
+  Future<void> _goToEnrollment() async {
+    final result = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => const EnrollmentScreen()),
+    );
+    if (result == true && mounted) {
+      setState(() => _isEnrolled = true);
+    }
+  }
 
   @override
   void dispose() {
@@ -39,6 +71,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     _sectionLabel('Info Akun'),
                     const SizedBox(height: 8),
                     _buildInfoCard(profile),
+                    const SizedBox(height: 20),
+                    _sectionLabel('Biometrik Wajah'),
+                    const SizedBox(height: 8),
+                    _buildBiometricCard(),
                     const SizedBox(height: 20),
                     _sectionLabel('Pengaturan'),
                     const SizedBox(height: 8),
@@ -312,6 +348,128 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
                 color: AppColors.textPrimary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ─── BIOMETRIC CARD ──────────────────────────────────────────────────────
+
+  Widget _buildBiometricCard() {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(7),
+                  decoration: BoxDecoration(
+                    color: _enrollChecked
+                        ? (_isEnrolled ? AppColors.successLight : AppColors.warningLight)
+                        : AppColors.background,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    _isEnrolled
+                        ? Icons.verified_user_rounded
+                        : Icons.face_retouching_off_rounded,
+                    size: 16,
+                    color: _enrollChecked
+                        ? (_isEnrolled ? AppColors.success : AppColors.warning)
+                        : AppColors.textSecondary,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Data Wajah',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        !_enrollChecked
+                            ? 'Mengecek status...'
+                            : _isEnrolled
+                                ? 'Wajah sudah terdaftar'
+                                : 'Belum ada data wajah',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: _enrollChecked && _isEnrolled
+                              ? AppColors.success
+                              : AppColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (!_enrollChecked)
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.primary,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const Divider(height: 1, indent: 16, endIndent: 16, color: AppColors.border),
+          InkWell(
+            onTap: _goToEnrollment,
+            borderRadius: const BorderRadius.only(
+              bottomLeft: Radius.circular(14),
+              bottomRight: Radius.circular(14),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(7),
+                    decoration: BoxDecoration(
+                      color: AppColors.primaryLight,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(
+                      Icons.face_retouching_natural_rounded,
+                      size: 16,
+                      color: AppColors.primary,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    _isEnrolled ? 'Daftarkan Ulang Wajah' : 'Daftarkan Wajah Sekarang',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                      color: AppColors.primary,
+                    ),
+                  ),
+                  const Spacer(),
+                  const Icon(
+                    Icons.chevron_right_rounded,
+                    color: AppColors.textSecondary,
+                    size: 20,
+                  ),
+                ],
               ),
             ),
           ),

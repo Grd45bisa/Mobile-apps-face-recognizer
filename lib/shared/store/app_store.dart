@@ -12,15 +12,22 @@ class AppStore extends ChangeNotifier {
   static final AppStore instance = AppStore._();
   AppStore._();
 
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
   @override
   void notifyListeners() {
-    // If called during a frame (build/layout/paint), defer to next frame.
-    // This prevents the _dependents.isEmpty assertion crash.
+    if (_disposed) return;
     final phase = SchedulerBinding.instance.schedulerPhase;
     if (phase == SchedulerPhase.persistentCallbacks ||
         phase == SchedulerPhase.transientCallbacks) {
       SchedulerBinding.instance.addPostFrameCallback((_) {
-        super.notifyListeners();
+        if (!_disposed) super.notifyListeners();
       });
     } else {
       super.notifyListeners();

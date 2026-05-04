@@ -10,13 +10,22 @@ class NotificationProvider extends ChangeNotifier {
   static final NotificationProvider instance = NotificationProvider._();
   NotificationProvider._();
 
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
   @override
   void notifyListeners() {
+    if (_disposed) return;
     final phase = SchedulerBinding.instance.schedulerPhase;
     if (phase == SchedulerPhase.persistentCallbacks ||
         phase == SchedulerPhase.transientCallbacks) {
       SchedulerBinding.instance.addPostFrameCallback((_) {
-        super.notifyListeners();
+        if (!_disposed) super.notifyListeners();
       });
     } else {
       super.notifyListeners();

@@ -11,10 +11,22 @@ enum HomeLoadState { loading, success, error }
 class HomeController extends ChangeNotifier {
   HomeLoadState _state = HomeLoadState.loading;
   String? _errorMessage;
+  bool _disposed = false;
 
   HomeLoadState get state => _state;
   String? get errorMessage => _errorMessage;
   bool get isLoading => _state == HomeLoadState.loading;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
 
   // Semua data dibaca dari AppStore yang sudah di-load saat login.
   // Controller ini hanya memastikan data hari ini dan minggu ini tersedia,
@@ -48,6 +60,8 @@ class HomeController extends ChangeNotifier {
 
       final results = await Future.wait(futures);
 
+      if (_disposed) return;
+
       // Simpan ke AppStore agar UI reaktif lewat ListenableBuilder
       final weekRecords = results[0] as List<AttendanceRecord>;
       for (final r in weekRecords) {
@@ -69,6 +83,8 @@ class HomeController extends ChangeNotifier {
       _state = HomeLoadState.success;
       _errorMessage = null;
     } catch (e) {
+      if (_disposed) return;
+
       // Jika AppStore sudah punya data (misalnya dari loadFromCloud), tetap
       // tampilkan data yang ada dan mark sebagai success.
       final now = DateTime.now();

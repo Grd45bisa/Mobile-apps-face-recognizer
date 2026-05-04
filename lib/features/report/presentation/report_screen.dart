@@ -1,12 +1,15 @@
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:printing/printing.dart';
 
 import '../../../shared/models/app_models.dart';
 import '../../../shared/services/attendance_service.dart';
 import '../../../shared/services/auth_service.dart';
+import '../../../shared/services/pdf/report_pdf_service.dart';
 import '../../../shared/services/reminder_service.dart';
 import '../../../shared/services/schedule_settings_service.dart';
 import '../../../shared/services/worklog_service.dart';
+import '../../../shared/store/app_store.dart';
 import '../../../shared/theme/app_colors.dart';
 
 class ReportScreen extends StatefulWidget {
@@ -1219,14 +1222,44 @@ class _ReportScreenState extends State<ReportScreen> {
     return '${hours}j ${minutes.toString().padLeft(2, '0')}m';
   }
 
-  void _showExportInfo() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          'Export PDF belum diaktifkan untuk periode ${_dateRangeLabel(_rangeStart, _rangeEnd)}.',
+  Future<void> _showExportInfo() async {
+    if (_isLoading) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Tunggu data selesai dimuat sebelum export PDF.'),
+          duration: Duration(seconds: 2),
         ),
-        duration: const Duration(seconds: 2),
-      ),
+      );
+      return;
+    }
+
+    final profile = AppStore.instance.profile;
+
+    final pdfData = ReportPdfData(
+      employeeName: profile?.fullName ?? 'Karyawan',
+      employeeEmail: profile?.email ?? '',
+      department: profile?.department,
+      position: profile?.position,
+      startDate: _rangeStart,
+      endDate: _rangeEnd,
+      presentDays: _reportData.presentDays,
+      workdayTarget: _reportData.workdayTarget,
+      missingDays: _reportData.missingDays,
+      offDays: _reportData.offDays,
+      totalEntries: _reportData.totalEntries,
+      totalWorkDuration: _reportData.totalWorkDuration,
+      onTimeCount: _reportData.onTimeCount,
+      daysWithCheckIn: _reportData.daysWithCheckIn,
+      buckets: _reportData.buckets
+          .map((b) => ReportBucket(start: b.start, end: b.end, hours: b.hours))
+          .toList(),
+    );
+
+    final doc = ReportPdfService.generate(pdfData);
+
+    await Printing.layoutPdf(
+      onLayout: (_) async => doc.save(),
+      name: 'FaceWork_${profile?.fullName ?? 'Laporan'}_${_dateShort(_rangeStart)}-${_dateShort(_rangeEnd)}.pdf',
     );
   }
 }
