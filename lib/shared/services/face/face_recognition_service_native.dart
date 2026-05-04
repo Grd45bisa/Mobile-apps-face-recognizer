@@ -30,9 +30,11 @@ class FaceRecognitionService {
   bool _initialized = false;
 
   // Cosine similarity threshold for L2-normalized MobileFaceNet embeddings.
-  // Range [0,1]. 0.72 is a reasonable starting point; lower to reduce false-rejects,
-  // raise to reduce false-accepts.
-  static const double _threshold = 0.72;
+  // Range [0,1]. With multi-pose enrollment (front/left/right) the query
+  // is matched against the best of N stored embeddings, so the threshold
+  // can be tuned slightly looser than single-embedding matching while still
+  // rejecting non-enrolled faces.
+  static const double _threshold = 0.68;
 
   static const int _inputSize = 112;
   static const int _embeddingSize = 192;
@@ -138,33 +140,100 @@ class FaceRecognitionService {
 
   // ── Alignment & crop ──────────────────────────────────────────────────────
 
-  /// Crop face bounding box with 20% padding and optional eye-landmark rotation.
+  /// Align and crop the face to 112×112 for MobileFaceNet inference.
+  ///
+  /// Strategy (eye-anchor):
+  /// 1. If both eye landmarks are available, rotate the full image so the
+  ///    eye line is horizontal, then derive the crop region from the eye
+  ///    midpoint with a fixed scale relative to eye distance.
+  ///    This makes the crop position invariant to small head tilts and
+  ///    distance changes — the #1 cause of embedding instability.
+  /// 2. If landmarks are absent, fall back to the bounding-box crop with
+  ///    40% padding (generous enough for MobileFaceNet).
   img.Image? _alignAndCrop(img.Image src, Face face) {
-    final box = face.boundingBox;
+    final leftEye  = face.landmarks[FaceLandmarkType.leftEye];
+    final rightEye = face.landmarks[FaceLandmarkType.rightEye];
 
-    final padding = (box.width * 0.2).toInt();
-    final x = (box.left - padding).clamp(0, src.width - 1).toInt();
-    final y = (box.top - padding).clamp(0, src.height - 1).toInt();
-    final w = (box.width + padding * 2).clamp(1, src.width - x).toInt();
-    final h = (box.height + padding * 2).clamp(1, src.height - y).toInt();
+    if (leftEye != null && rightEye != null) {
+      return _eyeAnchorCrop(src, face, leftEye, rightEye);
+    }
+    return _bboxCrop(src, face: face);
+  }
+
+  /// Eye-anchor crop: rotate so eyes are horizontal, crop around eye midpoint.
+  img.Image? _eyeAnchorCrop(
+    img.Image src,
+    Face face,
+    FaceLandmark leftEye,
+    FaceLandmark rightEye,
+  ) {
+    final leX = leftEye.position.x.toDouble();
+    final leY = leftEye.position.y.toDouble();
+    final reX = rightEye.position.x.toDouble();
+    final reY = rightEye.position.y.toDouble();
+
+    // 1. Rotate full image to level the eye line.
+    final dx = reX - leX;
+    final dy = reY - leY;
+    final angle = math.atan2(dy, dx) * 180 / math.pi;
+    final rotated = angle.abs() > 1.0
+        ? img.copyRotate(src, angle: -angle)
+        : src;
+
+    // After rotation the eye positions shift — recompute mid-point.
+    // Since we rotate around the image centre, apply the same transform
+    // to the landmark coordinates.
+    final cx = src.width / 2.0;
+    final cy = src.height / 2.0;
+    final rad = -angle * math.pi / 180.0;
+    final cosA = math.cos(rad);
+    final sinA = math.sin(rad);
+
+    double rotPt(double px, double py, bool isX) {
+      final rx = cosA * (px - cx) - sinA * (py - cy) + cx;
+      final ry = sinA * (px - cx) + cosA * (py - cy) + cy;
+      return isX ? rx : ry;
+    }
+
+    final mX = (rotPt(leX, leY, true)  + rotPt(reX, reY, true))  / 2.0;
+    final mY = (rotPt(leX, leY, false) + rotPt(reX, reY, false)) / 2.0;
+
+    // Eye distance after rotation (dx only, line is now horizontal).
+    final eyeDist = (rotPt(reX, reY, true) - rotPt(leX, leY, true)).abs();
+    if (eyeDist < 4) return _bboxCrop(src, face: face, rotated: rotated);
+
+    // Crop size = 3.5× eye distance — empirically good for MobileFaceNet.
+    // Eye midpoint sits at ~38% from top of the crop (standard alignment).
+    final cropSize = (eyeDist * 3.5).round();
+    final left   = (mX - cropSize / 2.0).round();
+    final top    = (mY - cropSize * 0.38).round();
+
+    final x = left.clamp(0, rotated.width - 1);
+    final y = top.clamp(0, rotated.height - 1);
+    final w = cropSize.clamp(1, rotated.width  - x);
+    final h = cropSize.clamp(1, rotated.height - y);
+
+    if (w < 20 || h < 20) return null;
+
+    final cropped = img.copyCrop(rotated, x: x, y: y, width: w, height: h);
+    return img.copyResize(cropped, width: _inputSize, height: _inputSize);
+  }
+
+  /// Bounding-box fallback crop with 40% padding.
+  img.Image? _bboxCrop(img.Image src, {Face? face, img.Image? rotated}) {
+    final image = rotated ?? src;
+    final box   = face?.boundingBox;
+    if (box == null) return null;
+
+    final padding = (box.width * 0.4).toInt();
+    final x = (box.left  - padding).clamp(0, image.width  - 1).toInt();
+    final y = (box.top   - padding).clamp(0, image.height - 1).toInt();
+    final w = (box.width  + padding * 2).clamp(1, image.width  - x).toInt();
+    final h = (box.height + padding * 2).clamp(1, image.height - y).toInt();
 
     if (w <= 0 || h <= 0) return null;
 
-    img.Image cropped = img.copyCrop(src, x: x, y: y, width: w, height: h);
-
-    // Eye-landmark alignment: only available when landmarks are enabled on the detector.
-    // Skip silently if landmarks are absent (e.g., fast-mode without landmark option).
-    final leftEye = face.landmarks[FaceLandmarkType.leftEye];
-    final rightEye = face.landmarks[FaceLandmarkType.rightEye];
-    if (leftEye != null && rightEye != null) {
-      final dx = rightEye.position.x - leftEye.position.x;
-      final dy = rightEye.position.y - leftEye.position.y;
-      final angle = math.atan2(dy.toDouble(), dx.toDouble()) * 180 / math.pi;
-      if (angle.abs() > 2.0) {
-        cropped = img.copyRotate(cropped, angle: -angle);
-      }
-    }
-
+    final cropped = img.copyCrop(image, x: x, y: y, width: w, height: h);
     return img.copyResize(cropped, width: _inputSize, height: _inputSize);
   }
 
@@ -223,6 +292,60 @@ class FaceRecognitionService {
 
     // ignore: avoid_print
     print('[FaceRec] cosine=${bestCosine.toStringAsFixed(4)}  '
+        'euclidean=${bestEuclidean.toStringAsFixed(4)}  '
+        'matched=$matched  threshold=$_threshold');
+
+    return RecognitionResult(
+      matched: matched,
+      employeeId: matched ? bestId : null,
+      similarity: bestCosine.clamp(0.0, 1.0),
+      euclideanDist: bestEuclidean,
+    );
+  }
+
+  /// Multi-pose matcher: each employee has a list of stored embeddings
+  /// (one per enrollment pose). For each employee we take the BEST cosine
+  /// similarity across their poses, then pick the employee with the highest
+  /// best-pose score. This is dramatically more robust than averaging
+  /// embeddings across poses, because head rotation moves the embedding in
+  /// non-linear ways and the average is rarely close to any pose.
+  RecognitionResult findBestMatchMulti(
+    List<double> queryEmbedding,
+    Map<String, List<List<double>>> storedEmbeddings,
+  ) {
+    if (storedEmbeddings.isEmpty) {
+      return const RecognitionResult(
+        matched: false,
+        similarity: 0,
+        euclideanDist: 0,
+      );
+    }
+
+    String? bestId;
+    double bestCosine = -1;
+    double bestEuclidean = double.infinity;
+
+    for (final entry in storedEmbeddings.entries) {
+      double localBestCos = -1;
+      double localBestEuc = double.infinity;
+      for (final stored in entry.value) {
+        final cos = cosineSimilarity(queryEmbedding, stored);
+        if (cos > localBestCos) {
+          localBestCos = cos;
+          localBestEuc = euclideanDistance(queryEmbedding, stored);
+        }
+      }
+      if (localBestCos > bestCosine) {
+        bestCosine = localBestCos;
+        bestEuclidean = localBestEuc;
+        bestId = entry.key;
+      }
+    }
+
+    final matched = bestCosine >= _threshold;
+
+    // ignore: avoid_print
+    print('[FaceRec] multi cosine=${bestCosine.toStringAsFixed(4)}  '
         'euclidean=${bestEuclidean.toStringAsFixed(4)}  '
         'matched=$matched  threshold=$_threshold');
 

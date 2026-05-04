@@ -32,6 +32,11 @@ class FaceRecognitionService {
   }) async => null;
   RecognitionResult findBestMatch(List<double> q, Map<String, List<double>> stored) =>
       const RecognitionResult(matched: false, similarity: 0, euclideanDist: 0);
+  RecognitionResult findBestMatchMulti(
+    List<double> q,
+    Map<String, List<List<double>>> stored,
+  ) =>
+      const RecognitionResult(matched: false, similarity: 0, euclideanDist: 0);
   static double cosineSimilarity(List<double> a, List<double> b) => 0;
   static double euclideanDistance(List<double> a, List<double> b) => 0;
   static List<double> averageEmbeddings(List<List<double>> e) => [];

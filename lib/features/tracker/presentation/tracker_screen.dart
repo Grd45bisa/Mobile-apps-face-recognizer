@@ -17,6 +17,9 @@ class TrackerScreen extends StatefulWidget {
 }
 
 class _TrackerScreenState extends State<TrackerScreen> {
+  static const double _fabBottomOffset = 0;
+  static const double _listBottomGap = 128;
+
   static const List<Color> _projectColorPalette = [
     AppColors.primary,
     AppColors.success,
@@ -390,7 +393,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
                                   entry,
                                   userId,
                                 );
-                                await _timerStateService.clearActiveTimer(userId);
+                                await _timerStateService.clearActiveTimer(
+                                  userId,
+                                );
                                 await _loadData();
                                 if (!mounted || !sheetContext.mounted) return;
                                 saved = true;
@@ -520,6 +525,9 @@ class _TrackerScreenState extends State<TrackerScreen> {
   Widget build(BuildContext context) {
     final grouped = _groupByDate(_worklogs);
     final sortedDates = grouped.keys.toList()..sort((a, b) => b.compareTo(a));
+    final bottomInset = MediaQuery.of(context).padding.bottom;
+    final fabBottomPadding = bottomInset + _fabBottomOffset;
+    final contentBottomPadding = fabBottomPadding + _listBottomGap;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -569,72 +577,83 @@ class _TrackerScreenState extends State<TrackerScreen> {
           ],
         ),
       ),
-      floatingActionButton: Padding(
-        padding: const EdgeInsets.only(bottom: 74),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(24),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x1A0F172A),
-                blurRadius: 18,
-                offset: Offset(0, 8),
-              ),
-            ],
+      body: Stack(
+        children: [
+          _isLoading
+              ? const Center(
+                  child: CircularProgressIndicator(
+                    color: AppColors.primary,
+                    strokeWidth: 2,
+                  ),
+                )
+              : _errorMessage != null
+              ? _buildErrorState()
+              : Column(
+                  children: [
+                    _buildTimerPanel(),
+                    Expanded(
+                      child: _worklogs.isEmpty
+                          ? _buildEmptyState(contentBottomPadding)
+                          : ListView.builder(
+                              padding: EdgeInsets.fromLTRB(
+                                16,
+                                14,
+                                16,
+                                contentBottomPadding,
+                              ),
+                              itemCount: sortedDates.length,
+                              itemBuilder: (context, index) {
+                                final date = sortedDates[index];
+                                final items = [...grouped[date]!]
+                                  ..sort((a, b) {
+                                    final aStart = _timeToMinutes(a.startTime);
+                                    final bStart = _timeToMinutes(b.startTime);
+                                    return bStart.compareTo(aStart);
+                                  });
+                                return _buildDateGroup(date, items);
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+          Positioned(
+            right: 16,
+            bottom: fabBottomPadding,
+            child: _buildAddButton(),
           ),
-          child: FloatingActionButton.extended(
-            onPressed: _showManualEntrySheet,
-            backgroundColor: AppColors.primary,
-            foregroundColor: Colors.white,
-            elevation: 0,
-            extendedPadding: const EdgeInsets.symmetric(
-              horizontal: 18,
-              vertical: 0,
-            ),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(24),
-            ),
-            icon: const Icon(Icons.edit_calendar_rounded, size: 20),
-            label: const Text(
-              'Tambah',
-              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
-            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAddButton() {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x1A0F172A),
+            blurRadius: 18,
+            offset: Offset(0, 8),
           ),
+        ],
+      ),
+      child: FloatingActionButton.extended(
+        onPressed: _showManualEntrySheet,
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
+        elevation: 0,
+        extendedPadding: const EdgeInsets.symmetric(
+          horizontal: 18,
+          vertical: 0,
+        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        icon: const Icon(Icons.edit_calendar_rounded, size: 20),
+        label: const Text(
+          'Tambah',
+          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
         ),
       ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
-      body: _isLoading
-          ? const Center(
-              child: CircularProgressIndicator(
-                color: AppColors.primary,
-                strokeWidth: 2,
-              ),
-            )
-          : _errorMessage != null
-          ? _buildErrorState()
-          : Column(
-              children: [
-                _buildTimerPanel(),
-                Expanded(
-                  child: _worklogs.isEmpty
-                      ? _buildEmptyState()
-                      : ListView.builder(
-                          padding: const EdgeInsets.fromLTRB(16, 14, 16, 96),
-                          itemCount: sortedDates.length,
-                          itemBuilder: (context, index) {
-                            final date = sortedDates[index];
-                            final items = [...grouped[date]!]
-                              ..sort((a, b) {
-                                final aStart = _timeToMinutes(a.startTime);
-                                final bStart = _timeToMinutes(b.startTime);
-                                return bStart.compareTo(aStart);
-                              });
-                            return _buildDateGroup(date, items);
-                          },
-                        ),
-                ),
-              ],
-            ),
     );
   }
 
@@ -1097,10 +1116,10 @@ class _TrackerScreenState extends State<TrackerScreen> {
     );
   }
 
-  Widget _buildEmptyState() {
+  Widget _buildEmptyState(double bottomPadding) {
     return Center(
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24),
+        padding: EdgeInsets.fromLTRB(24, 0, 24, bottomPadding),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
@@ -1931,8 +1950,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 const SizedBox(height: 12),
                 ConstrainedBox(
                   constraints: BoxConstraints(
-                    maxHeight:
-                        MediaQuery.of(sheetContext).size.height * 0.45,
+                    maxHeight: MediaQuery.of(sheetContext).size.height * 0.45,
                   ),
                   child: _projects.isEmpty
                       ? const Padding(

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
+import '../../../shared/services/face/face_quality_filter.dart';
 import '../../../shared/theme/app_colors.dart';
 
 enum CameraFaceState { loading, ready, scanning, detected, timeout, error, done }
@@ -59,22 +60,49 @@ class CameraFaceViewState extends State<CameraFaceView>
   bool _processingFrame = false;
   bool _disposed = false;
 
+  // Multi-frame sampling — kumpulkan hingga _maxSampleFrames frame yang
+  // terdeteksi wajah, evaluasi kualitasnya, kirim frame terbaik ke recognition.
+  // Ini menghindari frame blur/gelap acak yang langsung dikirim.
+  _SampledFrame? _bestFrame;
+  int _sampledCount = 0;
+  static const int _maxSampleFrames = 5;
   static const int _timeoutSec = 10;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    unawaited(_initCamera());
+    // Hanya init kamera bila widget aktif. Saat MainScreen masih di tab lain,
+    // AttendanceScreen di IndexedStack akan tetap di-build tapi isActive=false,
+    // jadi kamera TIDAK boot lebih awal.
+    if (widget.active) {
+      unawaited(_initCamera());
+    } else {
+      _state = CameraFaceState.ready;
+    }
   }
 
   @override
   void didUpdateWidget(CameraFaceView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // Tab Absensi baru saja menjadi aktif → boot kamera bila belum ada.
+    if (widget.active && !oldWidget.active) {
+      if (_controller == null) {
+        unawaited(_initCamera());
+      }
+      return;
+    }
+    // Tab Absensi baru saja ditinggalkan → matikan stream + lepas controller.
+    if (!widget.active && oldWidget.active) {
+      unawaited(_releaseCamera());
+      return;
+    }
+    // Tetap tidak aktif — pastikan tidak ada scan yang jalan.
     if (!widget.active) {
       unawaited(_stopScan());
       return;
     }
+    // Tetap aktif — kalau controller hilang (mis. setelah resume), re-init.
     if (_controller == null && _state != CameraFaceState.loading) {
       unawaited(_initCamera());
     }
@@ -83,13 +111,37 @@ class CameraFaceViewState extends State<CameraFaceView>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final ctrl = _controller;
-    if (ctrl == null || !ctrl.value.isInitialized) return;
 
     if (state == AppLifecycleState.inactive) {
-      unawaited(_disposeController(ctrl));
+      if (ctrl != null && ctrl.value.isInitialized) {
+        unawaited(_disposeController(ctrl));
+      }
     } else if (state == AppLifecycleState.resumed && widget.active) {
-      unawaited(_initCamera());
+      if (_controller == null) {
+        unawaited(_initCamera());
+      }
     }
+  }
+
+  /// Hentikan stream, dispose controller, dan kembalikan state ke ready
+  /// agar saat user balik ke tab ini, init bersih dari nol.
+  Future<void> _releaseCamera() async {
+    await _stopScan();
+    final ctrl = _controller;
+    _controller = null;
+    if (ctrl != null) {
+      try {
+        await ctrl.dispose();
+      } catch (_) {
+        // Ignore disposal races.
+      }
+    }
+    if (!mounted || _disposed) return;
+    setState(() {
+      _state = CameraFaceState.ready;
+      _countdown = _timeoutSec;
+      _errorMsg = null;
+    });
   }
 
   Future<void> _initCamera() async {
@@ -118,7 +170,10 @@ class CameraFaceViewState extends State<CameraFaceView>
 
       final ctrl = CameraController(
         front,
-        ResolutionPreset.medium,
+        // high agar resolusi setara dengan enrollment (yang juga pakai high),
+        // sehingga embedding dari attendance dan enrollment berasal dari
+        // kualitas gambar yang konsisten.
+        ResolutionPreset.high,
         enableAudio: false,
         imageFormatGroup: Platform.isAndroid
             ? ImageFormatGroup.nv21
@@ -132,6 +187,17 @@ class CameraFaceViewState extends State<CameraFaceView>
       }
 
       _controller = ctrl;
+
+      // Paksa brightness kamera ke maksimum agar wajah tetap terlihat
+      // jelas meskipun di ruangan gelap. Expose offset dipasang sekali
+      // saat init dan tidak diubah lagi kecuali di-release.
+      try {
+        final maxExp = await ctrl.getMaxExposureOffset();
+        await ctrl.setExposureOffset(maxExp.clamp(0.0, 2.0));
+      } catch (_) {
+        // Tidak semua device mendukung manual exposure — abaikan.
+      }
+
       setState(() => _state = CameraFaceState.ready);
     } catch (e) {
       if (!mounted || _disposed) return;
@@ -161,6 +227,8 @@ class CameraFaceViewState extends State<CameraFaceView>
     _scanning = true;
     _processingFrame = false;
     _countdown = _timeoutSec;
+    _bestFrame = null;
+    _sampledCount = 0;
     setState(() => _state = CameraFaceState.scanning);
 
     _timeoutTimer?.cancel();
@@ -202,53 +270,64 @@ class CameraFaceViewState extends State<CameraFaceView>
     try {
       final inputImage = _buildInputImage(image);
       final rotation = _currentRotation();
-      if (inputImage == null || rotation == null) {
-        _processingFrame = false;
-        return;
-      }
+      if (inputImage == null || rotation == null) return;
 
       final faces = await _faceDetector.processImage(inputImage);
-      if (!_scanning || !mounted) {
-        _processingFrame = false;
-        return;
-      }
-
-      if (faces.isEmpty) {
-        _processingFrame = false;
-        return;
-      }
+      if (!_scanning || !mounted) return;
+      if (faces.isEmpty) return;
 
       final fullImage = _cameraImageToImage(image, rotation);
-      if (fullImage == null) {
-        _processingFrame = false;
-        return;
+      if (fullImage == null) return;
+
+      // Quality check — hanya simpan frame jika lolos filter.
+      final quality = FaceQualityFilter.evaluate(fullImage, faces.first);
+      if (quality.accepted) {
+        _sampledCount++;
+        // Simpan frame dengan quality score tertinggi.
+        final current = _bestFrame;
+        if (current == null || quality.score > current.qualityScore) {
+          _bestFrame = _SampledFrame(
+            fullImage: fullImage,
+            inputImage: inputImage,
+            nv21Bytes: Platform.isAndroid ? image.planes.first.bytes : null,
+            rawWidth: image.width,
+            rawHeight: image.height,
+            rotation: rotation,
+            face: faces.first,
+            qualityScore: quality.score,
+          );
+        }
       }
 
+      // Lanjut sampling sampai dapat _maxSampleFrames frame yang diterima,
+      // atau langsung kirim jika dapat frame berkualitas sangat baik (>0.85).
+      final best = _bestFrame;
+      final shouldDispatch = best != null &&
+          (_sampledCount >= _maxSampleFrames || best.qualityScore > 0.85);
+
+      if (!shouldDispatch) return;
+
+      // Sudah dapat frame terbaik — stop stream dan kirim ke recognition.
       _scanning = false;
       _timeoutTimer?.cancel();
       _timeoutTimer = null;
       unawaited(_stopScan());
 
-      if (mounted) {
-        setState(() => _state = CameraFaceState.detected);
-      }
+      if (mounted) setState(() => _state = CameraFaceState.detected);
 
       try {
         await widget.onFaceDetected?.call(
-          fullImage: fullImage,
-          inputImage: inputImage,
-          nv21Bytes: Platform.isAndroid ? image.planes.first.bytes : null,
-          rawWidth: image.width,
-          rawHeight: image.height,
-          rotation: rotation,
-          face: faces.first,
+          fullImage: best.fullImage,
+          inputImage: best.inputImage,
+          nv21Bytes: best.nv21Bytes,
+          rawWidth: best.rawWidth,
+          rawHeight: best.rawHeight,
+          rotation: best.rotation,
+          face: best.face,
         );
       } catch (_) {
-        if (mounted) {
-          resetToReady();
-        }
+        if (mounted) resetToReady();
       }
-      return;
     } catch (_) {
       // Ignore per-frame errors.
     } finally {
@@ -392,6 +471,8 @@ class CameraFaceViewState extends State<CameraFaceView>
 
   void resetToReady() {
     unawaited(_stopScan());
+    _bestFrame = null;
+    _sampledCount = 0;
     if (!mounted) return;
     setState(() {
       _state = CameraFaceState.ready;
@@ -623,6 +704,29 @@ class CameraFaceViewState extends State<CameraFaceView>
               ),
             ),
             CustomPaint(painter: _FaceOverlayPainter(scanning: isScanning)),
+            // Indikator brightness dipaksa tinggi
+            Positioned(
+              top: 14,
+              right: 14,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.55),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.brightness_high_rounded, size: 13, color: Colors.amber),
+                    SizedBox(width: 4),
+                    Text(
+                      'Kecerahan penuh',
+                      style: TextStyle(fontSize: 10, color: Colors.white70),
+                    ),
+                  ],
+                ),
+              ),
+            ),
             if (isScanning)
               Positioned(
                 top: 14,
@@ -777,4 +881,28 @@ class _FaceOverlayPainter extends CustomPainter {
   bool shouldRepaint(covariant _FaceOverlayPainter oldDelegate) {
     return oldDelegate.scanning != scanning;
   }
+}
+
+/// Data holder untuk satu frame kandidat yang sudah lolos quality filter.
+/// Menyimpan semua data yang dibutuhkan oleh onFaceDetected callback.
+class _SampledFrame {
+  final img.Image fullImage;
+  final InputImage inputImage;
+  final Uint8List? nv21Bytes;
+  final int rawWidth;
+  final int rawHeight;
+  final InputImageRotation rotation;
+  final Face face;
+  final double qualityScore;
+
+  const _SampledFrame({
+    required this.fullImage,
+    required this.inputImage,
+    required this.nv21Bytes,
+    required this.rawWidth,
+    required this.rawHeight,
+    required this.rotation,
+    required this.face,
+    required this.qualityScore,
+  });
 }

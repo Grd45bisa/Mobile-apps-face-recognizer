@@ -18,6 +18,10 @@ import 'face_recognition_service.dart';
 ///   USING (employee_id = auth.uid())
 ///   WITH CHECK (employee_id = auth.uid());
 /// ```
+///
+/// The `embedding` column stores either a single embedding JSON array (v1)
+/// or a JSON array-of-arrays for multi-pose enrollment (v2). Decoder is
+/// shape-aware so existing v1 rows keep working.
 class EmbeddingSyncService {
   static final EmbeddingSyncService instance = EmbeddingSyncService._();
   EmbeddingSyncService._();
@@ -27,14 +31,32 @@ class EmbeddingSyncService {
 
   // ── Upload (enroll) ───────────────────────────────────────────────────────
 
-  /// Save embedding to both SQLite and Supabase.
+  /// Save a single embedding to both SQLite and Supabase.
+  /// Kept for backward compatibility — prefer [saveEmbeddings] for multi-pose.
   Future<void> saveEmbedding(String employeeId, List<double> embedding) async {
     final normalized = FaceRecognitionService.normalizeEmbedding(embedding);
 
-    // Always save locally first
     await EmbeddingDb.instance.upsert(employeeId, normalized);
 
-    // Then sync to cloud
+    await _client.from(_table).upsert({
+      'employee_id': employeeId,
+      'embedding': jsonEncode(normalized),
+      'updated_at': DateTime.now().toIso8601String(),
+    });
+  }
+
+  /// Save multiple embeddings (one per pose) for stronger matching.
+  /// Each embedding is L2-normalized before storage.
+  Future<void> saveEmbeddings(
+    String employeeId,
+    List<List<double>> embeddings,
+  ) async {
+    final normalized = embeddings
+        .map((e) => FaceRecognitionService.normalizeEmbedding(e))
+        .toList();
+
+    await EmbeddingDb.instance.upsertMulti(employeeId, normalized);
+
     await _client.from(_table).upsert({
       'employee_id': employeeId,
       'embedding': jsonEncode(normalized),
@@ -44,9 +66,9 @@ class EmbeddingSyncService {
 
   // ── Download (restore on new device) ─────────────────────────────────────
 
-  /// Pull embedding from Supabase and cache it in SQLite.
-  /// Call this when local cache is empty but user is authenticated.
-  Future<List<double>?> fetchAndCacheEmbedding(String employeeId) async {
+  /// Pull embedding(s) from Supabase and cache locally.
+  /// Returns the list of normalized embeddings (1..N) or null if not enrolled.
+  Future<List<List<double>>?> fetchAndCacheEmbeddings(String employeeId) async {
     final row = await _client
         .from(_table)
         .select('embedding')
@@ -55,13 +77,37 @@ class EmbeddingSyncService {
 
     if (row == null) return null;
 
-    final embedding = (jsonDecode(row['embedding'] as String) as List)
-        .map((e) => (e as num).toDouble())
-        .toList();
-    final normalized = FaceRecognitionService.normalizeEmbedding(embedding);
+    final raw = row['embedding'] as String;
+    final decoded = jsonDecode(raw) as List;
+    if (decoded.isEmpty) return null;
 
-    await EmbeddingDb.instance.upsert(employeeId, normalized);
+    final List<List<double>> embeddings;
+    if (decoded.first is List) {
+      // v2: list of lists
+      embeddings = decoded
+          .map((e) =>
+              (e as List).map((n) => (n as num).toDouble()).toList())
+          .toList();
+    } else {
+      // v1: single list
+      embeddings = [
+        decoded.map((e) => (e as num).toDouble()).toList(),
+      ];
+    }
+
+    final normalized = embeddings
+        .map((e) => FaceRecognitionService.normalizeEmbedding(e))
+        .toList();
+
+    await EmbeddingDb.instance.upsertMulti(employeeId, normalized);
     return normalized;
+  }
+
+  /// Backward-compat single-embedding fetch — returns first embedding only.
+  Future<List<double>?> fetchAndCacheEmbedding(String employeeId) async {
+    final list = await fetchAndCacheEmbeddings(employeeId);
+    if (list == null || list.isEmpty) return null;
+    return list.first;
   }
 
   // ── Check enrollment status ───────────────────────────────────────────────
@@ -78,15 +124,20 @@ class EmbeddingSyncService {
 
   // ── Get embedding (local-first, cloud fallback) ───────────────────────────
 
-  /// Get embedding for current user — checks SQLite first, then Supabase.
+  /// Get all embeddings for current user — checks SQLite first, then Supabase.
   /// Returns null if not enrolled anywhere.
-  Future<List<double>?> getEmbedding(String employeeId) async {
-    // Try local cache first (fast path)
-    final local = await EmbeddingDb.instance.get(employeeId);
-    if (local != null) return local;
+  Future<List<List<double>>?> getEmbeddings(String employeeId) async {
+    final local = await EmbeddingDb.instance.getMulti(employeeId);
+    if (local != null && local.isNotEmpty) return local;
 
-    // Fallback: pull from cloud and cache locally
-    return fetchAndCacheEmbedding(employeeId);
+    return fetchAndCacheEmbeddings(employeeId);
+  }
+
+  /// Backward-compat single-embedding getter — returns first only.
+  Future<List<double>?> getEmbedding(String employeeId) async {
+    final list = await getEmbeddings(employeeId);
+    if (list == null || list.isEmpty) return null;
+    return list.first;
   }
 
   // ── Delete (re-enrollment) ────────────────────────────────────────────────

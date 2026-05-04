@@ -1,11 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import '../models/app_notification.dart';
+import '../services/notification_service.dart';
 import '../store/app_store.dart';
 import '../theme/app_colors.dart';
 
 /// Derives in-app notification items from live AppStore state.
 /// No external data source — everything is computed from what's already loaded.
+///
+/// Setiap kali ada notifikasi baru yang belum pernah di-push ke OS,
+/// [refresh] akan memanggil [NotificationService.showNow] agar muncul
+/// di notification bar HP.
 class NotificationProvider extends ChangeNotifier {
   static final NotificationProvider instance = NotificationProvider._();
   NotificationProvider._();
@@ -33,6 +38,9 @@ class NotificationProvider extends ChangeNotifier {
   }
 
   final Map<String, bool> _readState = {};
+
+  // Set notifikasi yang sudah pernah di-push ke OS (supaya tidak double).
+  final Set<String> _pushedToOs = {};
 
   List<AppNotification> compute() {
     final store = AppStore.instance;
@@ -168,12 +176,47 @@ class NotificationProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void refresh() => notifyListeners();
+  /// Refresh state dan push notifikasi baru ke system bar HP.
+  /// Dipanggil oleh RealtimeSyncService saat data berubah.
+  void refresh() {
+    _pushNewToOs();
+    notifyListeners();
+  }
 
   // Reset read state daily (ids are date-scoped so they naturally expire next day)
   void resetReadState() {
     _readState.clear();
+    _pushedToOs.clear();
     notifyListeners();
+  }
+
+  // ── Push ke OS ────────────────────────────────────────────────────────────
+
+  /// Untuk setiap item yang belum pernah di-push ke OS, kirim via
+  /// [NotificationService.showNow]. Hanya high & medium priority yang
+  /// di-push agar tidak terlalu banyak notifikasi.
+  void _pushNewToOs() {
+    final items = compute();
+    for (final n in items) {
+      if (_pushedToOs.contains(n.id)) continue;
+      if (n.priority == NotificationPriority.low) continue;
+
+      _pushedToOs.add(n.id);
+
+      final channel = switch (n.category) {
+        NotificationCategory.attendance => NotifChannel.attendance,
+        NotificationCategory.tracker   => NotifChannel.tracker,
+        NotificationCategory.calendar  => NotifChannel.reminders,
+        _                              => NotifChannel.system,
+      };
+
+      NotificationService.instance.showNow(
+        id: n.id.hashCode & 0x7FFFFFFF,
+        title: n.title,
+        body: n.subtitle ?? n.timeLabel,
+        channel: channel,
+      );
+    }
   }
 
   String _fmtTime(DateTime dt) =>

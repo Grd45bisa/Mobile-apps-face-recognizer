@@ -22,6 +22,8 @@ class CalendarScreen extends StatefulWidget {
 class _CalendarScreenState extends State<CalendarScreen>
     with SingleTickerProviderStateMixin {
   static const _uuid = Uuid();
+  static const double _fabBottomOffset = 0;
+  static const double _contentBottomGap = 184;
   DateTime _focusedDay = DateTime.now();
   DateTime _selectedDay = DateTime(
     DateTime.now().year,
@@ -206,8 +208,8 @@ class _CalendarScreenState extends State<CalendarScreen>
   @override
   Widget build(BuildContext context) {
     final safeBottom = MediaQuery.of(context).padding.bottom;
-    final fabBottomOffset = safeBottom + 84.0;
-    final contentBottomPadding = safeBottom + 184.0;
+    final fabBottomPadding = safeBottom + _fabBottomOffset;
+    final contentBottomPadding = fabBottomPadding + _contentBottomGap;
 
     return GestureDetector(
       onTap: _closeFab,
@@ -258,31 +260,40 @@ class _CalendarScreenState extends State<CalendarScreen>
             const SizedBox(width: 4),
           ],
         ),
-        floatingActionButton: Padding(
-          padding: EdgeInsets.only(bottom: fabBottomOffset),
-          child: _buildFabMenu(),
-        ),
-        floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
-        body: ListenableBuilder(
-          listenable: _store,
-          builder: (context, _) {
-            return RefreshIndicator(
-              onRefresh: _refreshCalendar,
-              child: ListView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: EdgeInsets.fromLTRB(12, 12, 12, contentBottomPadding),
-                children: [
-                  _buildMonthSummary(),
-                  const SizedBox(height: 12),
-                  _buildCalendarCard(),
-                  const SizedBox(height: 12),
-                  _buildLegend(),
-                  const SizedBox(height: 12),
-                  _buildDayDetail(),
-                ],
-              ),
-            );
-          },
+        body: Stack(
+          children: [
+            ListenableBuilder(
+              listenable: _store,
+              builder: (context, _) {
+                return RefreshIndicator(
+                  onRefresh: _refreshCalendar,
+                  child: ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: EdgeInsets.fromLTRB(
+                      12,
+                      12,
+                      12,
+                      contentBottomPadding,
+                    ),
+                    children: [
+                      _buildMonthSummary(),
+                      const SizedBox(height: 12),
+                      _buildCalendarCard(),
+                      const SizedBox(height: 12),
+                      _buildLegend(),
+                      const SizedBox(height: 12),
+                      _buildDayDetail(),
+                    ],
+                  ),
+                );
+              },
+            ),
+            Positioned(
+              right: 16,
+              bottom: fabBottomPadding,
+              child: _buildFabMenu(),
+            ),
+          ],
         ),
       ),
     );
@@ -2077,11 +2088,15 @@ class _CalendarScreenState extends State<CalendarScreen>
                       try {
                         ReminderEvent saved;
                         if (existing != null) {
-                          saved = await ReminderService.instance
-                              .upsertReminder(event, uid);
+                          saved = await ReminderService.instance.upsertReminder(
+                            event,
+                            uid,
+                          );
                         } else {
-                          saved = await ReminderService.instance
-                              .upsertReminder(event, uid);
+                          saved = await ReminderService.instance.upsertReminder(
+                            event,
+                            uid,
+                          );
                         }
                         // Pop first, then update store to avoid _dependents assertion
                         if (ctx.mounted) Navigator.pop(ctx);
@@ -2100,9 +2115,7 @@ class _CalendarScreenState extends State<CalendarScreen>
                             SnackBar(
                               backgroundColor: AppColors.error,
                               duration: const Duration(seconds: 8),
-                              content: Text(
-                                'Gagal menyimpan pengingat: $e',
-                              ),
+                              content: Text('Gagal menyimpan pengingat: $e'),
                             ),
                           );
                         }

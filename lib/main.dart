@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'features/auth/presentation/reset_password_screen.dart';
 import 'features/auth/presentation/splash_screen.dart';
 import 'features/main_nav/main_screen.dart';
+import 'shared/providers/notification_provider.dart';
 import 'shared/services/auth_service.dart';
 import 'shared/services/notification_service.dart';
 import 'shared/services/realtime_sync_service.dart';
@@ -49,7 +50,9 @@ class _FaceWorkAppState extends State<FaceWorkApp> {
             _initialSignedInSkipped = true;
             return;
           }
-          AppStore.instance.loadFromCloud();
+          AppStore.instance.loadFromCloud().then((_) {
+            NotificationProvider.instance.refresh();
+          });
           final uid = AuthService.instance.currentUserId;
           if (uid != null) RealtimeSyncService.instance.subscribe(uid);
           if (!_isOnResetScreen()) {

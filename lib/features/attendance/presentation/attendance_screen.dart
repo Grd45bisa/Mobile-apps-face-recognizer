@@ -17,7 +17,12 @@ import '../../enrollment/presentation/enrollment_screen.dart';
 import 'camera_face_view.dart';
 
 class AttendanceScreen extends StatefulWidget {
-  const AttendanceScreen({super.key});
+  /// Apakah screen ini sedang aktif/dipilih pada bottom navigation.
+  /// Saat false, kamera tidak akan diinisialisasi — penting agar kamera tidak
+  /// boot lebih awal ketika user masih di tab Home/Tracker.
+  final bool isActive;
+
+  const AttendanceScreen({super.key, this.isActive = true});
 
   @override
   State<AttendanceScreen> createState() => _AttendanceScreenState();
@@ -121,11 +126,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         return;
       }
 
-      // 2. Load stored embedding (SQLite first, Supabase fallback)
-      final storedEmbedding = await EmbeddingSyncService.instance
-          .getEmbedding(uid)
+      // 2. Load stored embeddings (SQLite first, Supabase fallback).
+      //    Multi-pose enrollment menyimpan 3 embedding (depan/kiri/kanan).
+      final storedEmbeddings = await EmbeddingSyncService.instance
+          .getEmbeddings(uid)
           .timeout(const Duration(seconds: 8));
-      if (storedEmbedding == null) {
+      if (storedEmbeddings == null || storedEmbeddings.isEmpty) {
         _showResult(
           success: false,
           message: 'Wajah belum terdaftar. Silakan daftarkan wajah di halaman Profil.',
@@ -163,10 +169,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         return;
       }
 
-      // 4. Cocokkan vs embedding tersimpan
-      final result = FaceRecognitionService.instance.findBestMatch(
+      // 4. Cocokkan vs SEMUA embedding tersimpan (depan/kiri/kanan).
+      //    findBestMatchMulti mengambil similarity tertinggi dari pose-pose
+      //    enrollment, bukan rata-rata, sehingga jauh lebih akurat.
+      final result = FaceRecognitionService.instance.findBestMatchMulti(
         queryEmbedding,
-        {uid: storedEmbedding},
+        {uid: storedEmbeddings},
       );
 
       if (!result.matched) {
@@ -348,12 +356,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     if (result == true && mounted) {
       await _checkEnrollmentStatus();
       if (!mounted) return;
+      // Cukup ganti GlobalKey — CameraFaceView akan dibuat ulang dari nol
+      // (initState → _initCamera) sehingga lifecycle bersih dan kamera
+      // muncul kembali tanpa race condition dengan controller yang lama.
       setState(() {
         _isEnrolled = true;
         _cameraKey = GlobalKey<CameraFaceViewState>();
-      });
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _cameraKey.currentState?.refreshCamera();
       });
     }
   }
@@ -689,7 +697,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           Expanded(
             child: CameraFaceView(
               key: _cameraKey,
-              active: !_isCheckedOut,
+              // Aktif hanya jika tab ini sedang dipilih DAN belum check-out.
+              active: widget.isActive && !_isCheckedOut,
               hint: _cameraHint(),
               onFaceDetected: _onFaceDetected,
               onTimeout: _onTimeout,

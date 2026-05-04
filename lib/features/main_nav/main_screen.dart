@@ -24,18 +24,9 @@ class _MainScreenState extends State<MainScreen>
   static const double _fabSize = 64;
   static const double _notchRadius = 42;
 
-  late final List<Widget> _screens;
-
   @override
   void initState() {
     super.initState();
-    _screens = [
-      HomeScreen(onGoToTracker: () => _onTabSelected(1)),
-      const TrackerScreen(),
-      const AttendanceScreen(),
-      const CalendarScreen(),
-      const ReportScreen(),
-    ];
     _fabController = AnimationController(
       duration: const Duration(milliseconds: 150),
       vsync: this,
@@ -73,7 +64,19 @@ class _MainScreenState extends State<MainScreen>
     return Scaffold(
       backgroundColor: AppColors.background,
       extendBody: true,
-      body: IndexedStack(index: _currentIndex, children: _screens),
+      body: IndexedStack(
+        index: _currentIndex,
+        children: [
+          HomeScreen(onGoToTracker: () => _onTabSelected(1)),
+          const TrackerScreen(),
+          // AttendanceScreen menerima isActive=true HANYA saat tab Absensi
+          // sedang dipilih, sehingga kamera tidak boot lebih awal saat user
+          // masih di Home/Tracker, dan otomatis re-init saat user kembali.
+          AttendanceScreen(isActive: _currentIndex == 2),
+          const CalendarScreen(),
+          const ReportScreen(),
+        ],
+      ),
       bottomNavigationBar: SizedBox(
         height: _barHeight + _fabSize / 2 + bottomInset,
         child: Stack(

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../shared/providers/notification_provider.dart';
 import '../../../shared/services/auth_service.dart';
 import '../../../shared/services/realtime_sync_service.dart';
 import '../../../shared/store/app_store.dart';
@@ -43,7 +44,9 @@ class _SplashScreenState extends State<SplashScreen>
 
     if (AuthService.instance.isSignedIn) {
       final uid = AuthService.instance.currentUserId;
-      AppStore.instance.loadFromCloud();
+      AppStore.instance.loadFromCloud().then((_) {
+        NotificationProvider.instance.refresh();
+      });
       if (uid != null) RealtimeSyncService.instance.subscribe(uid);
       _navigate(const MainScreen());
     } else {
