@@ -140,6 +140,60 @@ class EmbeddingSyncService {
     return list.first;
   }
 
+  // ── Adaptive update (online learning) ────────────────────────────────────
+
+  /// Perbarui embedding saat presensi berhasil dengan similarity di zona
+  /// [minSimilarity, maxSimilarity] — artinya wajah dikenali tapi ada
+  /// pergeseran (ekspresi beda, pencahayaan beda, dsb).
+  ///
+  /// Cara kerja: exponential moving average antara embedding lama dan baru.
+  /// [alpha] = bobot frame baru (0.05–0.15 cukup konservatif).
+  /// Hanya embedding dengan similarity tertinggi yang diperbarui,
+  /// sehingga pose lain (kiri/kanan/ekspresi) tidak terkontaminasi.
+  Future<void> adaptEmbedding(
+    String employeeId,
+    List<double> newEmbedding, {
+    double minSimilarity = 0.55,
+    double maxSimilarity = 0.80,
+    double alpha = 0.08,
+  }) async {
+    final stored = await getEmbeddings(employeeId);
+    if (stored == null || stored.isEmpty) return;
+
+    // Cari embedding tersimpan yang paling mirip dengan frame baru.
+    int bestIdx = 0;
+    double bestSim = -1;
+    for (int i = 0; i < stored.length; i++) {
+      final sim = FaceRecognitionService.cosineSimilarity(newEmbedding, stored[i]);
+      if (sim > bestSim) {
+        bestSim = sim;
+        bestIdx = i;
+      }
+    }
+
+    // Hanya update kalau similarity ada di zona "hampir cocok".
+    if (bestSim < minSimilarity || bestSim > maxSimilarity) return;
+
+    // EMA: blended = normalize((1-alpha)*old + alpha*new)
+    final old = stored[bestIdx];
+    final blended = List<double>.generate(
+      old.length,
+      (i) => (1 - alpha) * old[i] + alpha * newEmbedding[i],
+    );
+    final normalized = FaceRecognitionService.normalizeEmbedding(blended);
+
+    final updated = List<List<double>>.from(stored);
+    updated[bestIdx] = normalized;
+
+    // Simpan ke SQLite lokal dulu (cepat), Supabase background.
+    await EmbeddingDb.instance.upsertMulti(employeeId, updated);
+    _client.from(_table).upsert({
+      'employee_id': employeeId,
+      'embedding': jsonEncode(updated),
+      'updated_at': DateTime.now().toIso8601String(),
+    }).then((_) {}).catchError((_) {});
+  }
+
   // ── Delete (re-enrollment) ────────────────────────────────────────────────
 
   Future<void> deleteEmbedding(String employeeId) async {

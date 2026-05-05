@@ -6,12 +6,11 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
 import '../../../shared/services/auth_service.dart';
 import '../../../shared/services/face/face_recognition_service.dart';
-import '../../../shared/services/screen_brightness_service.dart';
 import '../../../shared/services/face/face_quality_filter.dart';
 import '../../../shared/services/face/embedding_sync_service.dart';
 import '../../../shared/theme/app_colors.dart';
 
-enum _EnrollStep { front, left, right, processing, done, error }
+enum _EnrollStep { front, left, right, smile, processing, done, error }
 
 class EnrollmentScreen extends StatefulWidget {
   const EnrollmentScreen({super.key});
@@ -26,13 +25,13 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
   _EnrollStep _step = _EnrollStep.front;
   String? _errorMsg;
 
-  // One best-quality embedding per pose (front / left / right).
+  // Averaged embedding per pose (front / left / right / smile).
   final List<List<double>> _embeddings = [];
 
   // Per-pose capture progress shown in the UI while sampling frames.
   int _sampledFrames = 0;
   int _acceptedFrames = 0;
-  static const int _targetFrames = 5; // frames to attempt per pose
+  static const int _targetFrames = 8; // frames to attempt per pose
 
   final _detector = FaceDetector(
     options: FaceDetectorOptions(
@@ -48,7 +47,6 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    ScreenBrightnessService.instance.setMax();
     _initCamera();
     FaceRecognitionService.instance.init();
   }
@@ -83,14 +81,14 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       return;
     }
 
-    // Paksa brightness maksimum saat enrollment agar wajah selalu terang,
-    // termasuk di ruangan gelap. Gunakan exposure offset maksimum yg diizinkan.
+    // Gunakan auto exposure dan auto focus.
     try {
-      final maxExp = await ctrl.getMaxExposureOffset();
-      await ctrl.setExposureOffset(maxExp.clamp(0.0, 2.0));
-    } catch (_) {
-      // Abaikan — tidak semua device mendukung manual exposure.
-    }
+      await ctrl.setExposureMode(ExposureMode.auto);
+      await ctrl.setExposureOffset(0.0);
+    } catch (_) {}
+    try {
+      await ctrl.setFocusMode(FocusMode.auto);
+    } catch (_) {}
 
     setState(() => _camCtrl = ctrl);
   }
@@ -102,7 +100,6 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     _detector.close();
     _camCtrl?.dispose();
     FaceRecognitionService.instance.dispose();
-    ScreenBrightnessService.instance.restore();
     super.dispose();
   }
 
@@ -118,15 +115,13 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       _acceptedFrames = 0;
     });
 
-    List<double>? bestEmbedding;
-    double bestScore = -1;
+    final acceptedEmbeddings = <List<double>>[];
     String? lastRejectReason;
 
     for (int attempt = 0; attempt < _targetFrames; attempt++) {
       if (!mounted || _disposed) break;
 
-      // Jeda singkat agar frame berbeda satu sama lain (30 ms cukup).
-      await Future.delayed(const Duration(milliseconds: 30));
+      await Future.delayed(const Duration(milliseconds: 100));
 
       try {
         final xFile = await _camCtrl!.takePicture();
@@ -146,25 +141,18 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
 
         final face = faces.first;
 
-        // Quality gate
         final quality = FaceQualityFilter.evaluate(fullImage, face);
         if (!quality.accepted) {
           lastRejectReason = quality.rejectReason;
           continue;
         }
 
-        // Extract embedding
         final embedding = await FaceRecognitionService.instance
             .extractEmbedding(fullImage, face);
         if (embedding == null) continue;
 
-        if (mounted) setState(() => _acceptedFrames++);
-
-        // Keep only the best-scoring frame per pose
-        if (quality.score > bestScore) {
-          bestScore = quality.score;
-          bestEmbedding = embedding;
-        }
+        acceptedEmbeddings.add(embedding);
+        if (mounted) setState(() => _acceptedFrames = acceptedEmbeddings.length);
       } catch (_) {
         continue;
       }
@@ -172,7 +160,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
 
     if (!mounted || _disposed) return;
 
-    if (bestEmbedding == null) {
+    if (acceptedEmbeddings.isEmpty) {
       _showSnack(
         lastRejectReason != null
             ? 'Gagal: $lastRejectReason. Coba lagi dengan pencahayaan lebih baik.'
@@ -182,7 +170,12 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       return;
     }
 
-    _embeddings.add(bestEmbedding);
+    // Rata-rata semua embedding yang diterima agar representasi lebih stabil
+    // terhadap variasi pencahayaan dan ekspresi saat absensi nanti.
+    final averaged = acceptedEmbeddings.length == 1
+        ? acceptedEmbeddings.first
+        : FaceRecognitionService.averageEmbeddings(acceptedEmbeddings);
+    _embeddings.add(averaged);
 
     if (_step == _EnrollStep.front) {
       setState(() {
@@ -199,6 +192,13 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
         _acceptedFrames = 0;
       });
     } else if (_step == _EnrollStep.right) {
+      setState(() {
+        _step = _EnrollStep.smile;
+        _capturing = false;
+        _sampledFrames = 0;
+        _acceptedFrames = 0;
+      });
+    } else if (_step == _EnrollStep.smile) {
       await _finalize();
     }
   }
@@ -321,6 +321,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       ('Depan', _EnrollStep.front),
       ('Kiri', _EnrollStep.left),
       ('Kanan', _EnrollStep.right),
+      ('Ekspresi', _EnrollStep.smile),
     ];
     final currentIndex = steps.indexWhere((s) => s.$2 == _step);
 
@@ -407,6 +408,11 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
           'Miringkan kepala ke kanan',
           'Putar kepala sekitar 30° ke arah kanan',
           Icons.rotate_right_rounded,
+        ),
+      _EnrollStep.smile => (
+          'Buat ekspresi bebas',
+          'Senyum, cemberut, atau ekspresi alami Anda sehari-hari',
+          Icons.sentiment_satisfied_alt_rounded,
         ),
       _ => ('', '', Icons.face_rounded),
     };

@@ -30,11 +30,9 @@ class FaceRecognitionService {
   bool _initialized = false;
 
   // Cosine similarity threshold for L2-normalized MobileFaceNet embeddings.
-  // Range [0,1]. With multi-pose enrollment (front/left/right) the query
-  // is matched against the best of N stored embeddings, so the threshold
-  // can be tuned slightly looser than single-embedding matching while still
-  // rejecting non-enrolled faces.
-  static const double _threshold = 0.68;
+  // 0.55 tolerates lighting changes, wet hair, and expression variation
+  // (smile, squint) while still reliably rejecting different people.
+  static const double _threshold = 0.55;
 
   static const int _inputSize = 112;
   static const int _embeddingSize = 192;

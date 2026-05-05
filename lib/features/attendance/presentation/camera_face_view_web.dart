@@ -6,6 +6,13 @@ import 'package:image/image.dart' as img;
 import '../../../shared/theme/app_colors.dart';
 
 enum CameraFaceState { loading, ready, scanning, detected, timeout, error, done }
+enum LiveRecognitionStatus { noFace, detecting, recognized, uncertain, rejected }
+
+class LiveRecognitionResult {
+  final LiveRecognitionStatus status;
+  final double similarity;
+  const LiveRecognitionResult({required this.status, this.similarity = 0});
+}
 
 typedef FaceDetectedCallback = Future<void> Function({
   required img.Image fullImage,
@@ -17,11 +24,15 @@ typedef FaceDetectedCallback = Future<void> Function({
   required dynamic face,
 });
 
+typedef LiveRecognitionCallback = void Function(LiveRecognitionResult result);
+
 class CameraFaceView extends StatefulWidget {
   final bool active;
   final String hint;
   final FaceDetectedCallback? onFaceDetected;
   final VoidCallback? onTimeout;
+  final bool liveMode;
+  final LiveRecognitionCallback? onLiveRecognition;
 
   const CameraFaceView({
     super.key,
@@ -29,6 +40,8 @@ class CameraFaceView extends StatefulWidget {
     this.hint = 'Arahkan wajah ke kamera',
     this.onFaceDetected,
     this.onTimeout,
+    this.liveMode = false,
+    this.onLiveRecognition,
   });
 
   @override

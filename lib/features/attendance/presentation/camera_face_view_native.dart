@@ -6,10 +6,42 @@ import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
 import '../../../shared/services/face/face_quality_filter.dart';
-import '../../../shared/services/screen_brightness_service.dart';
 import '../../../shared/theme/app_colors.dart';
 
 enum CameraFaceState { loading, ready, scanning, detected, timeout, error, done }
+
+/// Status pengenalan wajah secara live (dikirim tiap frame saat mode live).
+enum LiveRecognitionStatus {
+  noFace,       // tidak ada wajah di frame
+  detecting,    // wajah ada tapi belum di-recognize (sedang proses)
+  recognized,   // wajah dikenali (similarity >= threshold)
+  uncertain,    // wajah ada tapi similarity di zona 55–80% (bisa update embedding)
+  rejected,     // wajah ada tapi tidak dikenali (similarity < 55%)
+}
+
+class LiveRecognitionResult {
+  final LiveRecognitionStatus status;
+  final double similarity;
+  final img.Image? fullImage;
+  final InputImage? inputImage;
+  final Uint8List? nv21Bytes;
+  final int rawWidth;
+  final int rawHeight;
+  final InputImageRotation? rotation;
+  final Face? face;
+
+  const LiveRecognitionResult({
+    required this.status,
+    this.similarity = 0,
+    this.fullImage,
+    this.inputImage,
+    this.nv21Bytes,
+    this.rawWidth = 0,
+    this.rawHeight = 0,
+    this.rotation,
+    this.face,
+  });
+}
 
 typedef FaceDetectedCallback = Future<void> Function({
   required img.Image fullImage,
@@ -21,11 +53,19 @@ typedef FaceDetectedCallback = Future<void> Function({
   required Face face,
 });
 
+typedef LiveRecognitionCallback = void Function(LiveRecognitionResult result);
+
 class CameraFaceView extends StatefulWidget {
   final bool active;
   final String hint;
   final FaceDetectedCallback? onFaceDetected;
   final VoidCallback? onTimeout;
+
+  /// Saat [liveMode] = true, kamera langsung stream dan memanggil
+  /// [onLiveRecognition] tiap ada frame yang terdeteksi wajah.
+  /// Tombol scan / timeout tidak digunakan dalam mode ini.
+  final bool liveMode;
+  final LiveRecognitionCallback? onLiveRecognition;
 
   const CameraFaceView({
     super.key,
@@ -33,6 +73,8 @@ class CameraFaceView extends StatefulWidget {
     this.hint = 'Arahkan wajah ke kamera',
     this.onFaceDetected,
     this.onTimeout,
+    this.liveMode = false,
+    this.onLiveRecognition,
   });
 
   @override
@@ -61,21 +103,19 @@ class CameraFaceViewState extends State<CameraFaceView>
   bool _processingFrame = false;
   bool _disposed = false;
 
-  // Multi-frame sampling — kumpulkan hingga _maxSampleFrames frame yang
-  // terdeteksi wajah, evaluasi kualitasnya, kirim frame terbaik ke recognition.
-  // Ini menghindari frame blur/gelap acak yang langsung dikirim.
   _SampledFrame? _bestFrame;
   int _sampledCount = 0;
   static const int _maxSampleFrames = 5;
   static const int _timeoutSec = 10;
 
+  // Live mode — throttle recognition agar tidak overload CPU.
+  static const Duration _liveThrottle = Duration(milliseconds: 600);
+  DateTime _lastLiveProcess = DateTime(0);
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // Hanya init kamera bila widget aktif. Saat MainScreen masih di tab lain,
-    // AttendanceScreen di IndexedStack akan tetap di-build tapi isActive=false,
-    // jadi kamera TIDAK boot lebih awal.
     if (widget.active) {
       unawaited(_initCamera());
     } else {
@@ -86,24 +126,18 @@ class CameraFaceViewState extends State<CameraFaceView>
   @override
   void didUpdateWidget(CameraFaceView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Tab Absensi baru saja menjadi aktif → boot kamera bila belum ada.
     if (widget.active && !oldWidget.active) {
-      if (_controller == null) {
-        unawaited(_initCamera());
-      }
+      if (_controller == null) unawaited(_initCamera());
       return;
     }
-    // Tab Absensi baru saja ditinggalkan → matikan stream + lepas controller.
     if (!widget.active && oldWidget.active) {
       unawaited(_releaseCamera());
       return;
     }
-    // Tetap tidak aktif — pastikan tidak ada scan yang jalan.
     if (!widget.active) {
       unawaited(_stopScan());
       return;
     }
-    // Tetap aktif — kalau controller hilang (mis. setelah resume), re-init.
     if (_controller == null && _state != CameraFaceState.loading) {
       unawaited(_initCamera());
     }
@@ -112,20 +146,15 @@ class CameraFaceViewState extends State<CameraFaceView>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final ctrl = _controller;
-
     if (state == AppLifecycleState.inactive) {
       if (ctrl != null && ctrl.value.isInitialized) {
         unawaited(_disposeController(ctrl));
       }
     } else if (state == AppLifecycleState.resumed && widget.active) {
-      if (_controller == null) {
-        unawaited(_initCamera());
-      }
+      if (_controller == null) unawaited(_initCamera());
     }
   }
 
-  /// Hentikan stream, dispose controller, dan kembalikan state ke ready
-  /// agar saat user balik ke tab ini, init bersih dari nol.
   Future<void> _releaseCamera() async {
     await _stopScan();
     final ctrl = _controller;
@@ -135,8 +164,6 @@ class CameraFaceViewState extends State<CameraFaceView>
         await ctrl.dispose();
       } catch (_) {}
     }
-    // Kembalikan kecerahan layar ke nilai semula saat kamera dilepas.
-    await ScreenBrightnessService.instance.restore();
     if (!mounted || _disposed) return;
     setState(() {
       _state = CameraFaceState.ready;
@@ -151,14 +178,11 @@ class CameraFaceViewState extends State<CameraFaceView>
 
     final previous = _controller;
     _controller = null;
-    if (previous != null) {
-      await _disposeController(previous);
-    }
+    if (previous != null) await _disposeController(previous);
 
     try {
       final cameras = await availableCameras();
       if (!mounted || _disposed) return;
-
       if (cameras.isEmpty) {
         _setError('Tidak ada kamera yang tersedia');
         return;
@@ -171,9 +195,6 @@ class CameraFaceViewState extends State<CameraFaceView>
 
       final ctrl = CameraController(
         front,
-        // high agar resolusi setara dengan enrollment (yang juga pakai high),
-        // sehingga embedding dari attendance dan enrollment berasal dari
-        // kualitas gambar yang konsisten.
         ResolutionPreset.high,
         enableAudio: false,
         imageFormatGroup: Platform.isAndroid
@@ -189,16 +210,20 @@ class CameraFaceViewState extends State<CameraFaceView>
 
       _controller = ctrl;
 
-      // Paksa exposure kamera ke maksimum
       try {
-        final maxExp = await ctrl.getMaxExposureOffset();
-        await ctrl.setExposureOffset(maxExp.clamp(0.0, 2.0));
+        await ctrl.setExposureMode(ExposureMode.auto);
+        await ctrl.setExposureOffset(0.0);
+      } catch (_) {}
+      try {
+        await ctrl.setFocusMode(FocusMode.auto);
       } catch (_) {}
 
-      // Paksa kecerahan layar ke 100% agar wajah terlihat jelas
-      await ScreenBrightnessService.instance.setMax();
-
       setState(() => _state = CameraFaceState.ready);
+
+      // Live mode: langsung mulai stream setelah kamera siap.
+      if (widget.liveMode) {
+        unawaited(_startLiveStream());
+      }
     } catch (e) {
       if (!mounted || _disposed) return;
       _setError(
@@ -216,6 +241,78 @@ class CameraFaceViewState extends State<CameraFaceView>
       _errorMsg = msg;
     });
   }
+
+  // ── Live mode stream ──────────────────────────────────────────────────────
+
+  Future<void> _startLiveStream() async {
+    final ctrl = _controller;
+    if (ctrl == null || !ctrl.value.isInitialized) return;
+    if (ctrl.value.isStreamingImages) return;
+    try {
+      await ctrl.startImageStream(_onLiveFrame);
+    } catch (_) {}
+  }
+
+  Future<void> _onLiveFrame(CameraImage image) async {
+    if (_processingFrame || _disposed) return;
+
+    final now = DateTime.now();
+    if (now.difference(_lastLiveProcess) < _liveThrottle) return;
+    _lastLiveProcess = now;
+    _processingFrame = true;
+
+    try {
+      final inputImage = _buildInputImage(image);
+      final rotation = _currentRotation();
+      if (inputImage == null || rotation == null) {
+        widget.onLiveRecognition?.call(
+          const LiveRecognitionResult(status: LiveRecognitionStatus.noFace),
+        );
+        return;
+      }
+
+      final faces = await _faceDetector.processImage(inputImage);
+      if (!mounted || _disposed) return;
+
+      if (faces.isEmpty) {
+        widget.onLiveRecognition?.call(
+          const LiveRecognitionResult(status: LiveRecognitionStatus.noFace),
+        );
+        return;
+      }
+
+      final fullImage = _cameraImageToImage(image, rotation);
+      if (fullImage == null) return;
+
+      final quality = FaceQualityFilter.evaluate(fullImage, faces.first);
+      if (!quality.accepted) {
+        widget.onLiveRecognition?.call(
+          const LiveRecognitionResult(status: LiveRecognitionStatus.detecting),
+        );
+        return;
+      }
+
+      // Kirim frame ke parent untuk diproses recognition-nya.
+      widget.onLiveRecognition?.call(
+        LiveRecognitionResult(
+          status: LiveRecognitionStatus.detecting,
+          fullImage: fullImage,
+          inputImage: inputImage,
+          nv21Bytes: Platform.isAndroid ? image.planes.first.bytes : null,
+          rawWidth: image.width,
+          rawHeight: image.height,
+          rotation: rotation,
+          face: faces.first,
+        ),
+      );
+    } catch (_) {
+      // Abaikan error per-frame.
+    } finally {
+      _processingFrame = false;
+    }
+  }
+
+  // ── Scan mode (button-triggered) ─────────────────────────────────────────
 
   void startScan() {
     if (_scanning || _state == CameraFaceState.done) return;
@@ -257,9 +354,7 @@ class CameraFaceViewState extends State<CameraFaceView>
     if (ctrl != null && ctrl.value.isInitialized && ctrl.value.isStreamingImages) {
       try {
         await ctrl.stopImageStream();
-      } catch (_) {
-        // Ignore stream shutdown races.
-      }
+      } catch (_) {}
     }
   }
 
@@ -279,11 +374,9 @@ class CameraFaceViewState extends State<CameraFaceView>
       final fullImage = _cameraImageToImage(image, rotation);
       if (fullImage == null) return;
 
-      // Quality check — hanya simpan frame jika lolos filter.
       final quality = FaceQualityFilter.evaluate(fullImage, faces.first);
       if (quality.accepted) {
         _sampledCount++;
-        // Simpan frame dengan quality score tertinggi.
         final current = _bestFrame;
         if (current == null || quality.score > current.qualityScore) {
           _bestFrame = _SampledFrame(
@@ -299,15 +392,12 @@ class CameraFaceViewState extends State<CameraFaceView>
         }
       }
 
-      // Lanjut sampling sampai dapat _maxSampleFrames frame yang diterima,
-      // atau langsung kirim jika dapat frame berkualitas sangat baik (>0.85).
       final best = _bestFrame;
       final shouldDispatch = best != null &&
           (_sampledCount >= _maxSampleFrames || best.qualityScore > 0.85);
 
       if (!shouldDispatch) return;
 
-      // Sudah dapat frame terbaik — stop stream dan kirim ke recognition.
       _scanning = false;
       _timeoutTimer?.cancel();
       _timeoutTimer = null;
@@ -329,11 +419,12 @@ class CameraFaceViewState extends State<CameraFaceView>
         if (mounted) resetToReady();
       }
     } catch (_) {
-      // Ignore per-frame errors.
     } finally {
       _processingFrame = false;
     }
   }
+
+  // ── Image helpers ─────────────────────────────────────────────────────────
 
   InputImage? _buildInputImage(CameraImage image) {
     final ctrl = _controller;
@@ -462,6 +553,8 @@ class CameraFaceViewState extends State<CameraFaceView>
     }
   }
 
+  // ── State controls ────────────────────────────────────────────────────────
+
   void _onTimeout() {
     unawaited(_stopScan());
     if (!mounted) return;
@@ -478,6 +571,8 @@ class CameraFaceViewState extends State<CameraFaceView>
       _state = CameraFaceState.ready;
       _countdown = _timeoutSec;
     });
+    // Live mode: restart stream setelah reset.
+    if (widget.liveMode) unawaited(_startLiveStream());
   }
 
   void markDone() {
@@ -504,14 +599,10 @@ class CameraFaceViewState extends State<CameraFaceView>
 
   Future<void> _disposeController(CameraController ctrl) async {
     await _stopScan();
-    if (_controller == ctrl) {
-      _controller = null;
-    }
+    if (_controller == ctrl) _controller = null;
     try {
       await ctrl.dispose();
-    } catch (_) {
-      // Ignore disposal races.
-    }
+    } catch (_) {}
   }
 
   @override
@@ -521,9 +612,10 @@ class CameraFaceViewState extends State<CameraFaceView>
     WidgetsBinding.instance.removeObserver(this);
     _faceDetector.close();
     _controller?.dispose();
-    unawaited(ScreenBrightnessService.instance.restore());
     super.dispose();
   }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -704,8 +796,8 @@ class CameraFaceViewState extends State<CameraFaceView>
                 child: CameraPreview(ctrl),
               ),
             ),
-            CustomPaint(painter: _FaceOverlayPainter(scanning: isScanning)),
-            if (isScanning)
+            CustomPaint(painter: _FaceOverlayPainter(scanning: isScanning || widget.liveMode)),
+            if (isScanning && !widget.liveMode)
               Positioned(
                 top: 14,
                 left: 0,
@@ -720,11 +812,7 @@ class CameraFaceViewState extends State<CameraFaceView>
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(
-                          Icons.timer_outlined,
-                          size: 13,
-                          color: Colors.white70,
-                        ),
+                        const Icon(Icons.timer_outlined, size: 13, color: Colors.white70),
                         const SizedBox(width: 5),
                         Text(
                           '$_countdown detik',
@@ -754,13 +842,16 @@ class CameraFaceViewState extends State<CameraFaceView>
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
-                        isScanning ? Icons.search_rounded : Icons.info_outline_rounded,
+                        widget.liveMode
+                            ? Icons.face_retouching_natural_rounded
+                            : (isScanning ? Icons.search_rounded : Icons.info_outline_rounded),
                         size: 13,
                         color: Colors.white70,
                       ),
                       const SizedBox(width: 6),
                       Text(
-                        isScanning ? 'Mendeteksi wajah...' : widget.hint,
+                        widget.liveMode ? 'Sedang memindai wajah...' :
+                          (isScanning ? 'Mendeteksi wajah...' : widget.hint),
                         style: const TextStyle(
                           fontSize: 11,
                           color: Colors.white,
@@ -830,14 +921,7 @@ class _FaceOverlayPainter extends CustomPainter {
     _bracket(canvas, bracketPaint, outer.bottomRight, -1, -1, len);
   }
 
-  void _bracket(
-    Canvas canvas,
-    Paint paint,
-    Offset corner,
-    double dx,
-    double dy,
-    double len,
-  ) {
+  void _bracket(Canvas canvas, Paint paint, Offset corner, double dx, double dy, double len) {
     canvas.drawLine(corner, corner + Offset(len * dx, 0), paint);
     canvas.drawLine(corner, corner + Offset(0, len * dy), paint);
   }
@@ -861,8 +945,6 @@ class _FaceOverlayPainter extends CustomPainter {
   }
 }
 
-/// Data holder untuk satu frame kandidat yang sudah lolos quality filter.
-/// Menyimpan semua data yang dibutuhkan oleh onFaceDetected callback.
 class _SampledFrame {
   final img.Image fullImage;
   final InputImage inputImage;

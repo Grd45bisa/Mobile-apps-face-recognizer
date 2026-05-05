@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -17,9 +18,6 @@ import '../../enrollment/presentation/enrollment_screen.dart';
 import 'camera_face_view.dart';
 
 class AttendanceScreen extends StatefulWidget {
-  /// Apakah screen ini sedang aktif/dipilih pada bottom navigation.
-  /// Saat false, kamera tidak akan diinisialisasi — penting agar kamera tidak
-  /// boot lebih awal ketika user masih di tab Home/Tracker.
   final bool isActive;
 
   const AttendanceScreen({super.key, this.isActive = true});
@@ -31,16 +29,26 @@ class AttendanceScreen extends StatefulWidget {
 class _AttendanceScreenState extends State<AttendanceScreen> {
   final _store = AppStore.instance;
   GlobalKey<CameraFaceViewState> _cameraKey = GlobalKey<CameraFaceViewState>();
-  final FaceDetector _faceDetector = FaceDetector(
-    options: FaceDetectorOptions(
-      performanceMode: FaceDetectorMode.accurate,
-      enableLandmarks: true,
-    ),
-  );
 
   bool _processing = false;
   bool _isEnrolled = false;
   bool _enrollChecked = false;
+
+  // Live recognition state
+  double _liveSimilarity = 0;
+  bool _liveRecognized = false;
+  bool _recognizing = false;
+  List<List<double>>? _cachedEmbeddings;
+  String? _cachedUid;
+
+  // Frame terakhir yang dikenali — dipakai saat user tekan tombol.
+  _RecognizedFrame? _lastRecognizedFrame;
+
+  // Throttle recognition agar tidak spam inference.
+  bool _inferencing = false;
+  static const Duration _inferenceThrottle = Duration(milliseconds: 800);
+  DateTime _lastInference = DateTime(0);
+
   DateTime get _today =>
       DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
 
@@ -55,14 +63,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     FaceRecognitionService.instance.init();
   }
 
-  @override
-  void dispose() {
-    _faceDetector.close();
-    super.dispose();
-  }
-
   Future<void> _checkEnrollmentStatus() async {
-    // On web, face recognition is not available — skip enrollment, go straight to manual mode.
     if (kIsWeb) {
       setState(() {
         _isEnrolled = true;
@@ -78,6 +79,112 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       _isEnrolled = enrolled;
       _enrollChecked = true;
     });
+
+    // Pre-load embeddings ke cache supaya live recognition tidak perlu
+    // fetch tiap frame.
+    if (enrolled) unawaited(_preloadEmbeddings(uid));
+  }
+
+  Future<void> _preloadEmbeddings(String uid) async {
+    final embeddings = await EmbeddingSyncService.instance.getEmbeddings(uid);
+    if (!mounted) return;
+    _cachedEmbeddings = embeddings;
+    _cachedUid = uid;
+  }
+
+  // ── Live recognition callback ─────────────────────────────────────────────
+
+  void _onLiveRecognition(LiveRecognitionResult result) {
+    if (_processing || _isCheckedOut) return;
+    if (result.status == LiveRecognitionStatus.noFace) {
+      if (_liveRecognized || _liveSimilarity > 0) {
+        setState(() {
+          _liveRecognized = false;
+          _liveSimilarity = 0;
+          _lastRecognizedFrame = null;
+        });
+      }
+      return;
+    }
+
+    // Frame ada wajah tapi belum ada data untuk di-infer.
+    final fullImage = result.fullImage;
+    final face = result.face;
+    if (fullImage == null || face == null) {
+      if (!_recognizing) {
+        setState(() => _recognizing = true);
+      }
+      return;
+    }
+
+    // Throttle inference.
+    final now = DateTime.now();
+    if (_inferencing || now.difference(_lastInference) < _inferenceThrottle) return;
+    _lastInference = now;
+    _inferencing = true;
+
+    unawaited(_runInference(result));
+  }
+
+  Future<void> _runInference(LiveRecognitionResult frame) async {
+    try {
+      final stored = _cachedEmbeddings;
+      final uid = _cachedUid;
+      if (stored == null || stored.isEmpty || uid == null) return;
+
+      final fullImage = frame.fullImage!;
+      final face = frame.face!;
+
+      List<double>? queryEmbedding;
+      if (frame.nv21Bytes != null && Platform.isAndroid) {
+        queryEmbedding = await FaceRecognitionService.instance
+            .extractEmbeddingFromNv21(
+              nv21Bytes: frame.nv21Bytes!,
+              width: frame.rawWidth,
+              height: frame.rawHeight,
+              rotation: frame.rotation!,
+              face: face,
+            )
+            .timeout(const Duration(seconds: 4));
+      } else {
+        queryEmbedding = await FaceRecognitionService.instance
+            .extractEmbedding(fullImage, face)
+            .timeout(const Duration(seconds: 4));
+      }
+
+      if (queryEmbedding == null || !mounted) return;
+
+      final result = FaceRecognitionService.instance.findBestMatchMulti(
+        queryEmbedding,
+        {uid: stored},
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        _liveSimilarity = result.similarity;
+        _liveRecognized = result.matched;
+        _recognizing = false;
+        if (result.matched) {
+          _lastRecognizedFrame = _RecognizedFrame(
+            queryEmbedding: queryEmbedding!,
+            fullImage: fullImage,
+            inputImage: frame.inputImage!,
+            nv21Bytes: frame.nv21Bytes,
+            rawWidth: frame.rawWidth,
+            rawHeight: frame.rawHeight,
+            rotation: frame.rotation!,
+            face: face,
+          );
+        } else {
+          _lastRecognizedFrame = null;
+        }
+      });
+    } catch (_) {
+      if (mounted) setState(() => _recognizing = false);
+    } finally {
+      _inferencing = false;
+    }
   }
 
   // ── Connectivity check ────────────────────────────────────────────────────
@@ -87,109 +194,41 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     return result.any((r) => r != ConnectivityResult.none);
   }
 
-  // ── Face recognition callback ─────────────────────────────────────────────
+  // ── Tombol Check-In / Check-Out ditekan ───────────────────────────────────
 
-  /// Called by CameraFaceView once the best sample frame is selected.
-  /// On Android uses raw NV21 bytes directly (no JPEG round-trip).
-  /// On iOS falls back to the decoded still image.
-  Future<void> _onFaceDetected({
-    required img.Image fullImage,
-    required dynamic inputImage,
-    required Uint8List? nv21Bytes,
-    required int rawWidth,
-    required int rawHeight,
-    required InputImageRotation rotation,
-    required dynamic face,
-  }) async {
-    if (_processing || _isCheckedOut) return;
+  void _handleButtonTap() {
+    if (_isCheckedOut || _processing) return;
+    if (kIsWeb) {
+      _manualCheckInOrOut();
+      return;
+    }
+    if (!_liveRecognized || _lastRecognizedFrame == null) return;
+    unawaited(_confirmAndRecord());
+  }
+
+  Future<void> _confirmAndRecord() async {
+    final frame = _lastRecognizedFrame;
+    if (frame == null) return;
+
+    if (_isCheckedIn) {
+      final confirmed = await _confirmCheckOut();
+      if (!confirmed) return;
+    }
+
     setState(() => _processing = true);
 
     try {
-      // 1. Connectivity guard
       if (!await _isOnline()) {
         _showResult(
           success: false,
-          message: 'Tidak ada koneksi internet. Sambungkan ke internet untuk absensi.',
+          message: 'Tidak ada koneksi internet.',
           icon: Icons.wifi_off_rounded,
         );
-        _cameraKey.currentState?.resetToReady();
         return;
       }
 
       final uid = AuthService.instance.currentUserId;
-      if (uid == null) {
-        _showResult(
-          success: false,
-          message: 'Sesi login tidak ditemukan. Silakan masuk ulang.',
-        );
-        _cameraKey.currentState?.resetToReady();
-        return;
-      }
-
-      // 2. Load stored embeddings (SQLite first, Supabase fallback).
-      //    Multi-pose enrollment menyimpan 3 embedding (depan/kiri/kanan).
-      final storedEmbeddings = await EmbeddingSyncService.instance
-          .getEmbeddings(uid)
-          .timeout(const Duration(seconds: 8));
-      if (storedEmbeddings == null || storedEmbeddings.isEmpty) {
-        _showResult(
-          success: false,
-          message: 'Wajah belum terdaftar. Silakan daftarkan wajah di halaman Profil.',
-          icon: Icons.face_retouching_off_rounded,
-        );
-        _cameraKey.currentState?.resetToReady();
-        return;
-      }
-
-      // 3. Extract embedding — NV21 path on Android bypasses JPEG compression,
-      //    giving sharper crops at medium resolution.
-      List<double>? queryEmbedding;
-      if (nv21Bytes != null && Platform.isAndroid && face is Face) {
-        queryEmbedding = await FaceRecognitionService.instance
-            .extractEmbeddingFromNv21(
-              nv21Bytes: nv21Bytes,
-              width: rawWidth,
-              height: rawHeight,
-              rotation: rotation,
-              face: face,
-            )
-            .timeout(const Duration(seconds: 8));
-      } else if (face is Face) {
-        queryEmbedding = await FaceRecognitionService.instance
-            .extractEmbedding(fullImage, face)
-            .timeout(const Duration(seconds: 8));
-      }
-
-      if (queryEmbedding == null) {
-        _showResult(
-          success: false,
-          message: 'Gagal mengekstrak fitur wajah. Coba lagi.',
-        );
-        _cameraKey.currentState?.resetToReady();
-        return;
-      }
-
-      // 4. Cocokkan vs SEMUA embedding tersimpan (depan/kiri/kanan).
-      //    findBestMatchMulti mengambil similarity tertinggi dari pose-pose
-      //    enrollment, bukan rata-rata, sehingga jauh lebih akurat.
-      final result = FaceRecognitionService.instance.findBestMatchMulti(
-        queryEmbedding,
-        {uid: storedEmbeddings},
-      );
-
-      if (!result.matched) {
-        _showResult(
-          success: false,
-          message:
-              'Wajah tidak dikenali (${(result.similarity * 100).toStringAsFixed(1)}%). Pastikan wajah lurus, pencahayaan cukup, dan daftar ulang jika perlu.',
-          icon: Icons.no_accounts_rounded,
-        );
-        _cameraKey.currentState?.resetToReady();
-        return;
-      }
-
-      // 5. Wajah dikenali → lanjut check-in / check-out
-      if (!mounted) return;
+      if (uid == null) return;
 
       if (!_isCheckedIn) {
         final record = await AttendanceService.instance.checkIn(
@@ -199,17 +238,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         if (!mounted) return;
         _store.setAttendance(record);
         NotificationProvider.instance.refresh();
-        _cameraKey.currentState?.resetToReady();
         _showResult(
           success: true,
           message: 'Check-in berhasil pukul ${_fmtTod(record.checkIn!)}',
         );
       } else {
-        final confirmed = await _confirmCheckOut();
-        if (!confirmed) {
-          if (mounted) _cameraKey.currentState?.resetToReady();
-          return;
-        }
         final record = await AttendanceService.instance.checkOut(uid);
         if (!mounted) return;
         _store.setAttendance(record);
@@ -221,21 +254,28 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           color: AppColors.error,
         );
       }
+
+      // Adaptive embedding update — update di background, jangan blok UI.
+      unawaited(
+        EmbeddingSyncService.instance.adaptEmbedding(uid, frame.queryEmbedding),
+      );
+
+      setState(() {
+        _liveRecognized = false;
+        _liveSimilarity = 0;
+        _lastRecognizedFrame = null;
+      });
     } catch (e) {
       if (mounted) {
         _showResult(success: false, message: 'Gagal menyimpan presensi. Coba lagi.');
-        _cameraKey.currentState?.resetToReady();
       }
     } finally {
       if (mounted) setState(() => _processing = false);
     }
   }
 
-  void _onTimeout() {
-    // CameraFaceView already shows timeout UI — nothing extra needed.
-  }
-
   Future<bool> _confirmCheckOut() async {
+    final pct = (_liveSimilarity * 100).toStringAsFixed(0);
     final result = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -244,9 +284,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           'Konfirmasi Check-Out',
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
         ),
-        content: const Text(
-          'Wajah dikenali. Lanjutkan check-out sekarang?',
-          style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+        content: Text(
+          'Wajah dikenali ($pct%). Lanjutkan check-out sekarang?',
+          style: const TextStyle(fontSize: 13, color: AppColors.textSecondary),
         ),
         actions: [
           TextButton(
@@ -267,6 +307,41 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       ),
     );
     return result ?? false;
+  }
+
+  Future<void> _manualCheckInOrOut() async {
+    final uid = AuthService.instance.currentUserId;
+    if (uid == null) return;
+    setState(() => _processing = true);
+    try {
+      if (!_isCheckedIn) {
+        final record = await AttendanceService.instance.checkIn(
+          uid,
+          source: AttendanceSource.manual,
+        );
+        if (!mounted) return;
+        _store.setAttendance(record);
+        NotificationProvider.instance.refresh();
+        _showResult(
+          success: true,
+          message: 'Check-in berhasil pukul ${_fmtTod(record.checkIn!)}',
+        );
+      } else {
+        final record = await AttendanceService.instance.checkOut(uid);
+        if (!mounted) return;
+        _store.setAttendance(record);
+        NotificationProvider.instance.refresh();
+        _showResult(
+          success: true,
+          message: 'Check-out berhasil pukul ${_fmtTod(record.checkOut!)}',
+          color: AppColors.error,
+        );
+      }
+    } catch (e) {
+      if (mounted) _showResult(success: false, message: 'Gagal: $e');
+    } finally {
+      if (mounted) setState(() => _processing = false);
+    }
   }
 
   void _showResult({
@@ -302,52 +377,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     );
   }
 
-  void _handleButtonTap() {
-    if (_isCheckedOut || _processing) return;
-    if (kIsWeb) {
-      _manualCheckInOrOut();
-      return;
-    }
-    _cameraKey.currentState?.startScan();
-  }
-
-  Future<void> _manualCheckInOrOut() async {
-    final uid = AuthService.instance.currentUserId;
-    if (uid == null) return;
-    setState(() => _processing = true);
-    try {
-      if (!_isCheckedIn) {
-        final record = await AttendanceService.instance.checkIn(
-          uid,
-          source: AttendanceSource.manual,
-        );
-        if (!mounted) return;
-        _store.setAttendance(record);
-        NotificationProvider.instance.refresh();
-        _showResult(
-          success: true,
-          message: 'Check-in berhasil pukul ${_fmtTod(record.checkIn!)}',
-        );
-      } else {
-        final record = await AttendanceService.instance.checkOut(uid);
-        if (!mounted) return;
-        _store.setAttendance(record);
-        NotificationProvider.instance.refresh();
-        _showResult(
-          success: true,
-          message: 'Check-out berhasil pukul ${_fmtTod(record.checkOut!)}',
-          color: AppColors.error,
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        _showResult(success: false, message: 'Gagal: $e');
-      }
-    } finally {
-      if (mounted) setState(() => _processing = false);
-    }
-  }
-
   Future<void> _goToEnrollment() async {
     final result = await Navigator.push<bool>(
       context,
@@ -356,9 +385,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     if (result == true && mounted) {
       await _checkEnrollmentStatus();
       if (!mounted) return;
-      // Cukup ganti GlobalKey — CameraFaceView akan dibuat ulang dari nol
-      // (initState → _initCamera) sehingga lifecycle bersih dan kamera
-      // muncul kembali tanpa race condition dengan controller yang lama.
       setState(() {
         _isEnrolled = true;
         _cameraKey = GlobalKey<CameraFaceViewState>();
@@ -381,9 +407,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               child: CircularProgressIndicator(color: AppColors.primary),
             );
           }
-          if (!_isEnrolled) {
-            return _buildEnrollPrompt();
-          }
+          if (!_isEnrolled) return _buildEnrollPrompt();
           return SafeArea(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
@@ -392,7 +416,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                   _buildStatusSummary(),
                   const SizedBox(height: 14),
                   Expanded(child: _buildCameraArea()),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 10),
+                  if (!_isCheckedOut && !kIsWeb) _buildRecognitionStatus(),
+                  const SizedBox(height: 10),
                   _buildSupportingInfo(),
                   const SizedBox(height: 14),
                   _buildActionButton(),
@@ -405,7 +431,115 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     );
   }
 
-  // ── Enrollment prompt (wajah belum didaftarkan) ───────────────────────────
+  // ── Recognition status bar ────────────────────────────────────────────────
+
+  Widget _buildRecognitionStatus() {
+    if (_processing) {
+      return _statusChip(
+        icon: Icons.hourglass_top_rounded,
+        label: 'Menyimpan presensi...',
+        color: AppColors.primary,
+        bg: AppColors.primaryLight,
+      );
+    }
+
+    if (_liveRecognized) {
+      final pct = (_liveSimilarity * 100).toStringAsFixed(0);
+      return _statusChip(
+        icon: Icons.verified_rounded,
+        label: 'Wajah dikenali · $pct% — Tekan tombol untuk presensi',
+        color: AppColors.success,
+        bg: AppColors.successLight,
+        showBar: true,
+        barValue: _liveSimilarity,
+        barColor: AppColors.success,
+      );
+    }
+
+    if (_recognizing) {
+      return _statusChip(
+        icon: Icons.manage_search_rounded,
+        label: 'Mengenali wajah...',
+        color: AppColors.warning,
+        bg: AppColors.warningLight,
+      );
+    }
+
+    if (_liveSimilarity > 0) {
+      final pct = (_liveSimilarity * 100).toStringAsFixed(0);
+      return _statusChip(
+        icon: Icons.face_retouching_off_rounded,
+        label: 'Wajah belum dikenali · $pct%',
+        color: AppColors.error,
+        bg: AppColors.errorLight,
+        showBar: true,
+        barValue: _liveSimilarity,
+        barColor: AppColors.error,
+      );
+    }
+
+    return _statusChip(
+      icon: Icons.face_rounded,
+      label: 'Arahkan wajah ke kamera',
+      color: AppColors.textSecondary,
+      bg: AppColors.background,
+    );
+  }
+
+  Widget _statusChip({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required Color bg,
+    bool showBar = false,
+    double barValue = 0,
+    Color barColor = AppColors.primary,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 15, color: color),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: color,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (showBar) ...[
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: barValue.clamp(0.0, 1.0),
+                backgroundColor: color.withValues(alpha: 0.15),
+                color: barColor,
+                minHeight: 4,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // ── Enrollment prompt ─────────────────────────────────────────────────────
 
   Widget _buildEnrollPrompt() {
     return Center(
@@ -700,9 +834,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                 : CameraFaceView(
                     key: _cameraKey,
                     active: widget.isActive,
-                    hint: _cameraHint(),
-                    onFaceDetected: _onFaceDetected,
-                    onTimeout: _onTimeout,
+                    hint: 'Arahkan wajah ke kamera',
+                    liveMode: !kIsWeb,
+                    onLiveRecognition: _onLiveRecognition,
                   ),
           ),
         ],
@@ -710,16 +844,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     );
   }
 
-  String _cameraHint() {
-    if (_isCheckedOut) return 'Presensi hari ini sudah selesai';
-    if (_isCheckedIn) return 'Tap tombol untuk mulai scan check-out';
-    return 'Tap tombol untuk mulai scan check-in';
-  }
-
   String _cameraSubtitle() {
     if (_isCheckedOut) return 'Presensi hari ini sudah selesai';
-    if (_isCheckedIn) return 'Siap check-out — scan wajah untuk konfirmasi';
-    return 'Posisikan wajah di dalam area oval';
+    if (_liveRecognized) return 'Wajah dikenali — tekan tombol untuk presensi';
+    return 'Kamera aktif — arahkan wajah ke tengah';
   }
 
   // ── Supporting info ───────────────────────────────────────────────────────
@@ -741,22 +869,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               decoration: BoxDecoration(
                 color: Colors.white,
                 shape: BoxShape.circle,
-                border: Border.all(
-                  color: AppColors.success.withValues(alpha: 0.16),
-                ),
+                border: Border.all(color: AppColors.success.withValues(alpha: 0.16)),
                 boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x120F172A),
-                    blurRadius: 16,
-                    offset: Offset(0, 8),
-                  ),
+                  BoxShadow(color: Color(0x120F172A), blurRadius: 16, offset: Offset(0, 8)),
                 ],
               ),
-              child: const Icon(
-                Icons.check_circle_rounded,
-                size: 36,
-                color: AppColors.success,
-              ),
+              child: const Icon(Icons.check_circle_rounded, size: 36, color: AppColors.success),
             ),
             const SizedBox(height: 18),
             Text(
@@ -772,11 +890,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             Text(
               _completedAttendanceMessage(),
               textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontSize: 13,
-                height: 1.45,
-                color: AppColors.textSecondary,
-              ),
+              style: const TextStyle(fontSize: 13, height: 1.45, color: AppColors.textSecondary),
             ),
             const SizedBox(height: 16),
             Container(
@@ -892,46 +1006,74 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   // ── Action button ─────────────────────────────────────────────────────────
 
   Widget _buildActionButton() {
-    final IconData icon;
-    final String label;
-    final Color bg;
-    final VoidCallback? onPressed;
-
     if (_isCheckedOut) {
-      icon = Icons.check_circle_rounded;
-      label = 'Presensi Selesai';
-      bg = AppColors.success;
-      onPressed = null;
-    } else if (_isCheckedIn) {
-      icon = Icons.logout_rounded;
-      label = _processing
-          ? 'Memproses…'
-          : (kIsWeb ? 'Check-Out Manual' : 'Scan Wajah untuk Check-Out');
-      bg = AppColors.error;
-      onPressed = _processing ? null : _handleButtonTap;
-    } else {
-      icon = kIsWeb
-          ? Icons.login_rounded
-          : Icons.face_retouching_natural_rounded;
-      label = _processing
-          ? 'Memproses…'
-          : (kIsWeb ? 'Check-In Manual' : 'Scan Wajah untuk Check-In');
-      bg = AppColors.primary;
-      onPressed = _processing ? null : _handleButtonTap;
+      return SizedBox(
+        width: double.infinity,
+        height: 54,
+        child: ElevatedButton.icon(
+          onPressed: null,
+          icon: const Icon(Icons.check_circle_rounded, size: 20),
+          label: const Text('Presensi Selesai',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.successLight,
+            foregroundColor: AppColors.success,
+            disabledBackgroundColor: AppColors.successLight,
+            disabledForegroundColor: AppColors.success,
+            elevation: 0,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        ),
+      );
     }
 
-    return SizedBox(
+    if (kIsWeb) {
+      return SizedBox(
+        width: double.infinity,
+        height: 54,
+        child: ElevatedButton.icon(
+          onPressed: _processing ? null : _handleButtonTap,
+          icon: Icon(_isCheckedIn ? Icons.logout_rounded : Icons.login_rounded, size: 20),
+          label: Text(
+            _processing ? 'Memproses…' : (_isCheckedIn ? 'Check-Out Manual' : 'Check-In Manual'),
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+          ),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _isCheckedIn ? AppColors.error : AppColors.primary,
+            foregroundColor: Colors.white,
+            elevation: 0,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        ),
+      );
+    }
+
+    // Mode live: tombol aktif hanya kalau wajah sudah dikenali.
+    final canPress = _liveRecognized && !_processing;
+    final label = _processing
+        ? 'Memproses…'
+        : (_liveRecognized
+            ? (_isCheckedIn ? 'Konfirmasi Check-Out' : 'Konfirmasi Check-In')
+            : (_isCheckedIn ? 'Menunggu verifikasi wajah...' : 'Menunggu verifikasi wajah...'));
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
       width: double.infinity,
       height: 54,
       child: ElevatedButton.icon(
-        onPressed: onPressed,
-        icon: Icon(icon, size: 20),
+        onPressed: canPress ? _handleButtonTap : null,
+        icon: Icon(
+          _liveRecognized
+              ? (_isCheckedIn ? Icons.logout_rounded : Icons.login_rounded)
+              : Icons.face_retouching_natural_rounded,
+          size: 20,
+        ),
         label: Text(label, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
         style: ElevatedButton.styleFrom(
-          backgroundColor: bg,
+          backgroundColor: _isCheckedIn ? AppColors.error : AppColors.primary,
           foregroundColor: Colors.white,
-          disabledBackgroundColor: AppColors.successLight,
-          disabledForegroundColor: AppColors.success,
+          disabledBackgroundColor: AppColors.border,
+          disabledForegroundColor: AppColors.textSecondary,
           elevation: 0,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         ),
@@ -960,4 +1102,27 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     const days = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
     return '${days[now.weekday - 1]}, ${now.day} ${months[now.month - 1]} ${now.year}';
   }
+}
+
+/// Data frame yang berhasil dikenali, disimpan sampai user tekan tombol.
+class _RecognizedFrame {
+  final List<double> queryEmbedding;
+  final img.Image fullImage;
+  final InputImage inputImage;
+  final Uint8List? nv21Bytes;
+  final int rawWidth;
+  final int rawHeight;
+  final InputImageRotation rotation;
+  final Face face;
+
+  const _RecognizedFrame({
+    required this.queryEmbedding,
+    required this.fullImage,
+    required this.inputImage,
+    this.nv21Bytes,
+    required this.rawWidth,
+    required this.rawHeight,
+    required this.rotation,
+    required this.face,
+  });
 }
