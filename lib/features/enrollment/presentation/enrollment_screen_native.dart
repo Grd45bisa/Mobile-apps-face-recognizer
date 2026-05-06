@@ -524,7 +524,6 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
                 child: CameraPreview(ctrl),
               ),
             ),
-            CustomPaint(painter: _EnrollOverlayPainter()),
           ],
         ),
       ),
@@ -714,33 +713,3 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
   }
 }
 
-// ── Oval overlay for enrollment ───────────────────────────────────────────────
-
-class _EnrollOverlayPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final ovalRect = Rect.fromCenter(
-      center: Offset(size.width / 2, size.height / 2),
-      width: size.width * 0.62,
-      height: size.height * 0.72,
-    );
-
-    final maskPath = Path()
-      ..addRect(Rect.fromLTWH(0, 0, size.width, size.height))
-      ..addOval(ovalRect)
-      ..fillType = PathFillType.evenOdd;
-    canvas.drawPath(
-        maskPath, Paint()..color = Colors.black.withValues(alpha: 0.5));
-
-    canvas.drawOval(
-      ovalRect,
-      Paint()
-        ..color = AppColors.primary
-        ..strokeWidth = 3
-        ..style = PaintingStyle.stroke,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter old) => false;
-}

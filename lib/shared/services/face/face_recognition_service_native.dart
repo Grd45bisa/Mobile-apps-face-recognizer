@@ -1,5 +1,5 @@
 import 'dart:math' as math;
-import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
@@ -78,8 +78,8 @@ class FaceRecognitionService {
     return _runInference(resized);
   }
 
-  /// Convert NV21 camera bytes to img.Image, apply rotation, then crop the detected face.
-  /// This avoids the JPEG round-trip of takePicture() and gives sharper crops at low resolution.
+  /// Extract embedding from NV21 bytes by decoding ONLY the face crop region.
+  /// Heavy work (NV21 decode + TFLite) runs in a background isolate via compute().
   Future<List<double>?> extractEmbeddingFromNv21({
     required Uint8List nv21Bytes,
     required int width,
@@ -89,51 +89,159 @@ class FaceRecognitionService {
   }) async {
     if (!_initialized) await init();
 
-    img.Image fullImage = _nv21ToImage(nv21Bytes, width, height);
-    fullImage = _applyRotation(fullImage, rotation);
+    // Compute the padded crop region in the original (pre-rotation) NV21 space.
+    // We decode only this region instead of the full multi-megapixel frame.
+    final box = face.boundingBox;
+    final padding = (box.width * 0.5).toInt();
+    final cropX = (box.left - padding).clamp(0, width - 1).toInt();
+    final cropY = (box.top - padding).clamp(0, height - 1).toInt();
+    final cropW = (box.width + padding * 2).clamp(1, width - cropX).toInt();
+    final cropH = (box.height + padding * 2).clamp(1, height - cropY).toInt();
 
-    final cropped = _alignAndCrop(fullImage, face);
-    if (cropped == null) return null;
-    return _runInference(cropped);
+    final leftEye  = face.landmarks[FaceLandmarkType.leftEye];
+    final rightEye = face.landmarks[FaceLandmarkType.rightEye];
+
+    // Decode only the crop region from NV21 in a background isolate,
+    // passing eye landmarks so alignment matches the enrollment pipeline.
+    final faceImage = await compute(_nv21CropToImage, _NV21CropParams(
+      nv21: nv21Bytes,
+      frameWidth: width,
+      frameHeight: height,
+      cropX: cropX,
+      cropY: cropY,
+      cropW: cropW,
+      cropH: cropH,
+      rotation: rotation,
+      leX: leftEye?.position.x.toDouble(),
+      leY: leftEye?.position.y.toDouble(),
+      reX: rightEye?.position.x.toDouble(),
+      reY: rightEye?.position.y.toDouble(),
+    ));
+
+    if (faceImage == null) return null;
+    return _runInference(faceImage);
   }
 
-  // ── NV21 helpers (mirrored from reference facedetector.dart) ─────────────
+  // ── Top-level function for compute() ──────────────────────────────────────
+  // Runs in a background isolate: decode crop from NV21, apply rotation,
+  // then eye-anchor align (same pipeline as enrollment) → resize to 112×112.
 
-  static img.Image _nv21ToImage(Uint8List nv21, int width, int height) {
-    final image = img.Image(width: width, height: height);
-    final int ySize = width * height;
+  static img.Image? _nv21CropToImage(_NV21CropParams p) {
+    // 1. Decode only the padded bounding-box region from NV21.
+    final ySize = p.frameWidth * p.frameHeight;
+    final raw = img.Image(width: p.cropW, height: p.cropH);
 
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
-        final int yIndex = y * width + x;
-        final int uvIndex = ySize + (y >> 1) * width + (x & ~1);
+    for (int cy = 0; cy < p.cropH; cy++) {
+      final fy = p.cropY + cy;
+      for (int cx = 0; cx < p.cropW; cx++) {
+        final fx = p.cropX + cx;
+        final yIndex = fy * p.frameWidth + fx;
+        final uvIndex = ySize + (fy >> 1) * p.frameWidth + (fx & ~1);
+        if (yIndex >= ySize || uvIndex + 1 >= p.nv21.length) continue;
 
-        final int yVal = nv21[yIndex];
-        final int vVal = nv21[uvIndex];
-        final int uVal = nv21[uvIndex + 1];
+        final yVal = p.nv21[yIndex];
+        final vVal = p.nv21[uvIndex];
+        final uVal = p.nv21[uvIndex + 1];
 
-        final int r = (yVal + 1.370705 * (vVal - 128)).round().clamp(0, 255);
-        final int g = (yVal - 0.698001 * (vVal - 128) - 0.337633 * (uVal - 128))
+        final r = (yVal + 1.370705 * (vVal - 128)).round().clamp(0, 255);
+        final g = (yVal - 0.698001 * (vVal - 128) - 0.337633 * (uVal - 128))
             .round().clamp(0, 255);
-        final int b = (yVal + 1.732446 * (uVal - 128)).round().clamp(0, 255);
-
-        image.setPixelRgb(x, y, r, g, b);
+        final b = (yVal + 1.732446 * (uVal - 128)).round().clamp(0, 255);
+        raw.setPixelRgb(cx, cy, r, g, b);
       }
     }
-    return image;
-  }
 
-  static img.Image _applyRotation(img.Image image, InputImageRotation rotation) {
-    switch (rotation) {
+    // 2. Apply sensor rotation to the crop.
+    final img.Image rotated;
+    switch (p.rotation) {
       case InputImageRotation.rotation90deg:
-        return img.copyRotate(image, angle: 90);
+        rotated = img.copyRotate(raw, angle: 90);
       case InputImageRotation.rotation180deg:
-        return img.copyRotate(image, angle: 180);
+        rotated = img.copyRotate(raw, angle: 180);
       case InputImageRotation.rotation270deg:
-        return img.copyRotate(image, angle: 270);
+        rotated = img.copyRotate(raw, angle: 270);
       case InputImageRotation.rotation0deg:
-        return image;
+        rotated = raw;
     }
+
+    // 3. Eye-anchor alignment using landmark coordinates mapped into crop space.
+    //    Landmark positions from MLKit are in full-frame coordinates — subtract
+    //    the crop origin so they map correctly into the decoded sub-image.
+    if (p.leX != null && p.leY != null && p.reX != null && p.reY != null) {
+      // Transform landmark to crop-local coordinates, then apply the same
+      // rotation we applied to the image pixels.
+      double mapX(double fx, double fy) {
+        final cx2 = fx - p.cropX;
+        final cy2 = fy - p.cropY;
+        switch (p.rotation) {
+          case InputImageRotation.rotation90deg:
+            return (p.cropH - 1) - cy2;
+          case InputImageRotation.rotation180deg:
+            return (p.cropW - 1) - cx2;
+          case InputImageRotation.rotation270deg:
+            return cy2.toDouble();
+          case InputImageRotation.rotation0deg:
+            return cx2.toDouble();
+        }
+      }
+      double mapY(double fx, double fy) {
+        final cx2 = fx - p.cropX;
+        final cy2 = fy - p.cropY;
+        switch (p.rotation) {
+          case InputImageRotation.rotation90deg:
+            return cx2.toDouble();
+          case InputImageRotation.rotation180deg:
+            return (p.cropH - 1) - cy2;
+          case InputImageRotation.rotation270deg:
+            return (p.cropW - 1) - cx2;
+          case InputImageRotation.rotation0deg:
+            return cy2.toDouble();
+        }
+      }
+
+      final leXr = mapX(p.leX!, p.leY!);
+      final leYr = mapY(p.leX!, p.leY!);
+      final reXr = mapX(p.reX!, p.reY!);
+      final reYr = mapY(p.reX!, p.reY!);
+
+      final dx = reXr - leXr;
+      final dy = reYr - leYr;
+      final angle = math.atan2(dy, dx) * 180 / math.pi;
+
+      final aligned = angle.abs() > 1.0
+          ? img.copyRotate(rotated, angle: -angle)
+          : rotated;
+
+      final cosA = math.cos(-angle * math.pi / 180);
+      final sinA = math.sin(-angle * math.pi / 180);
+      final imgCx = rotated.width / 2.0;
+      final imgCy = rotated.height / 2.0;
+
+      double rot(double px, double py, bool isX) {
+        final rx = cosA * (px - imgCx) - sinA * (py - imgCy) + imgCx;
+        final ry = sinA * (px - imgCx) + cosA * (py - imgCy) + imgCy;
+        return isX ? rx : ry;
+      }
+
+      final mX = (rot(leXr, leYr, true)  + rot(reXr, reYr, true))  / 2.0;
+      final mY = (rot(leXr, leYr, false) + rot(reXr, reYr, false)) / 2.0;
+      final eyeDist = (rot(reXr, reYr, true) - rot(leXr, leYr, true)).abs();
+
+      if (eyeDist >= 4) {
+        final cropSize = (eyeDist * 3.5).round();
+        final x = (mX - cropSize / 2.0).round().clamp(0, aligned.width - 1);
+        final y = (mY - cropSize * 0.38).round().clamp(0, aligned.height - 1);
+        final w = cropSize.clamp(1, aligned.width - x);
+        final h = cropSize.clamp(1, aligned.height - y);
+        if (w >= 20 && h >= 20) {
+          final face = img.copyCrop(aligned, x: x, y: y, width: w, height: h);
+          return img.copyResize(face, width: 112, height: 112);
+        }
+      }
+    }
+
+    // 4. Fallback: just resize the rotated crop directly.
+    return img.copyResize(rotated, width: 112, height: 112);
   }
 
   // ── Alignment & crop ──────────────────────────────────────────────────────
@@ -433,4 +541,35 @@ class FaceRecognitionService {
 
   double get threshold => _threshold;
   bool get isInitialized => _initialized;
+}
+
+class _NV21CropParams {
+  final Uint8List nv21;
+  final int frameWidth;
+  final int frameHeight;
+  final int cropX;
+  final int cropY;
+  final int cropW;
+  final int cropH;
+  final InputImageRotation rotation;
+  // Eye landmark positions in full-frame coordinates (nullable — fallback to bbox).
+  final double? leX;
+  final double? leY;
+  final double? reX;
+  final double? reY;
+
+  const _NV21CropParams({
+    required this.nv21,
+    required this.frameWidth,
+    required this.frameHeight,
+    required this.cropX,
+    required this.cropY,
+    required this.cropW,
+    required this.cropH,
+    required this.rotation,
+    this.leX,
+    this.leY,
+    this.reX,
+    this.reY,
+  });
 }

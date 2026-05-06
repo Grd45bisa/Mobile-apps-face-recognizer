@@ -11,7 +11,25 @@ enum LiveRecognitionStatus { noFace, detecting, recognized, uncertain, rejected 
 class LiveRecognitionResult {
   final LiveRecognitionStatus status;
   final double similarity;
-  const LiveRecognitionResult({required this.status, this.similarity = 0});
+  final img.Image? fullImage;
+  final dynamic inputImage;
+  final Uint8List? nv21Bytes;
+  final int rawWidth;
+  final int rawHeight;
+  final InputImageRotation? rotation;
+  final dynamic face;
+
+  const LiveRecognitionResult({
+    required this.status,
+    this.similarity = 0,
+    this.fullImage,
+    this.inputImage,
+    this.nv21Bytes,
+    this.rawWidth = 0,
+    this.rawHeight = 0,
+    this.rotation,
+    this.face,
+  });
 }
 
 typedef FaceDetectedCallback = Future<void> Function({

@@ -108,8 +108,8 @@ class CameraFaceViewState extends State<CameraFaceView>
   static const int _maxSampleFrames = 5;
   static const int _timeoutSec = 10;
 
-  // Live mode — throttle recognition agar tidak overload CPU.
-  static const Duration _liveThrottle = Duration(milliseconds: 600);
+  // Live mode — throttle face detection agar tidak overload CPU.
+  static const Duration _liveThrottle = Duration(milliseconds: 200);
   DateTime _lastLiveProcess = DateTime(0);
 
   @override
@@ -281,10 +281,12 @@ class CameraFaceViewState extends State<CameraFaceView>
         return;
       }
 
-      final fullImage = _cameraImageToImage(image, rotation);
-      if (fullImage == null) return;
-
-      final quality = FaceQualityFilter.evaluate(fullImage, faces.first);
+      // Fast check — hanya bounding box + tilt, tanpa decode pixel.
+      final quality = FaceQualityFilter.evaluateFast(
+        faces.first,
+        image.width,
+        image.height,
+      );
       if (!quality.accepted) {
         widget.onLiveRecognition?.call(
           const LiveRecognitionResult(status: LiveRecognitionStatus.detecting),
@@ -292,13 +294,13 @@ class CameraFaceViewState extends State<CameraFaceView>
         return;
       }
 
-      // Kirim frame ke parent untuk diproses recognition-nya.
+      // Kirim raw bytes — FaceRecognitionService yang decode saat inference.
+      final nv21 = Platform.isAndroid ? image.planes.first.bytes : null;
+
       widget.onLiveRecognition?.call(
         LiveRecognitionResult(
           status: LiveRecognitionStatus.detecting,
-          fullImage: fullImage,
-          inputImage: inputImage,
-          nv21Bytes: Platform.isAndroid ? image.planes.first.bytes : null,
+          nv21Bytes: nv21,
           rawWidth: image.width,
           rawHeight: image.height,
           rotation: rotation,
@@ -796,7 +798,6 @@ class CameraFaceViewState extends State<CameraFaceView>
                 child: CameraPreview(ctrl),
               ),
             ),
-            CustomPaint(painter: _FaceOverlayPainter(scanning: isScanning || widget.liveMode)),
             if (isScanning && !widget.liveMode)
               Positioned(
                 top: 14,
@@ -877,73 +878,6 @@ class CameraFaceViewState extends State<CameraFaceView>
   }
 }
 
-class _FaceOverlayPainter extends CustomPainter {
-  final bool scanning;
-
-  const _FaceOverlayPainter({this.scanning = false});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final ovalRect = Rect.fromCenter(
-      center: Offset(size.width / 2, size.height / 2),
-      width: size.width * 0.62,
-      height: size.height * 0.72,
-    );
-
-    final maskPath = Path()
-      ..addRect(Rect.fromLTWH(0, 0, size.width, size.height))
-      ..addOval(ovalRect)
-      ..fillType = PathFillType.evenOdd;
-    canvas.drawPath(maskPath, Paint()..color = Colors.black.withValues(alpha: 0.45));
-
-    final borderColor = scanning
-        ? AppColors.primary.withValues(alpha: 0.95)
-        : AppColors.primary.withValues(alpha: 0.9);
-    _drawDashedOval(
-      canvas,
-      ovalRect,
-      Paint()
-        ..color = borderColor
-        ..strokeWidth = scanning ? 2.5 : 2
-        ..style = PaintingStyle.stroke,
-    );
-
-    final bracketPaint = Paint()
-      ..color = AppColors.primary
-      ..strokeWidth = 3
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-    const len = 18.0;
-    final outer = ovalRect.inflate(8);
-    _bracket(canvas, bracketPaint, outer.topLeft, 1, 1, len);
-    _bracket(canvas, bracketPaint, outer.topRight, -1, 1, len);
-    _bracket(canvas, bracketPaint, outer.bottomLeft, 1, -1, len);
-    _bracket(canvas, bracketPaint, outer.bottomRight, -1, -1, len);
-  }
-
-  void _bracket(Canvas canvas, Paint paint, Offset corner, double dx, double dy, double len) {
-    canvas.drawLine(corner, corner + Offset(len * dx, 0), paint);
-    canvas.drawLine(corner, corner + Offset(0, len * dy), paint);
-  }
-
-  void _drawDashedOval(Canvas canvas, Rect rect, Paint paint) {
-    final path = Path()..addOval(rect);
-    const dashLen = 7.0;
-    const gapLen = 5.0;
-    for (final metric in path.computeMetrics()) {
-      var distance = 0.0;
-      while (distance < metric.length) {
-        canvas.drawPath(metric.extractPath(distance, distance + dashLen), paint);
-        distance += dashLen + gapLen;
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _FaceOverlayPainter oldDelegate) {
-    return oldDelegate.scanning != scanning;
-  }
-}
 
 class _SampledFrame {
   final img.Image fullImage;

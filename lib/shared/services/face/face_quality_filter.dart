@@ -35,14 +35,53 @@ class FaceQualityFilter {
 
   // ── Public API ─────────────────────────────────────────────────────────────
 
-  /// Evaluate a single frame.
-  ///
-  /// [fullImage] — the decoded full camera frame (any orientation-corrected).
-  /// [face]      — MLKit detection result on [fullImage].
-  ///
-  /// Returns a [FrameQualityResult] with [accepted]=true and a 0–1 quality
-  /// [score] when the frame passes all checks, or [accepted]=false with a
-  /// human-readable [rejectReason] otherwise.
+  /// Lightweight check for live streaming — no pixel decoding needed.
+  /// Only checks face size relative to frame dimensions and head tilt.
+  /// Use this in the camera stream to avoid blocking the UI thread.
+  static FrameQualityResult evaluateFast(
+    Face face,
+    int frameWidth,
+    int frameHeight,
+  ) {
+    final box = face.boundingBox;
+    final shorter = frameWidth < frameHeight ? frameWidth : frameHeight;
+    final faceSize = box.width < box.height ? box.width : box.height;
+
+    if (faceSize / shorter < _minFaceSizeRatio) {
+      return const FrameQualityResult(
+        accepted: false,
+        score: 0,
+        rejectReason: 'Wajah terlalu jauh dari kamera',
+      );
+    }
+
+    double tilt = 0;
+    final leftEye = face.landmarks[FaceLandmarkType.leftEye];
+    final rightEye = face.landmarks[FaceLandmarkType.rightEye];
+    if (leftEye != null && rightEye != null) {
+      final dx = (rightEye.position.x - leftEye.position.x).toDouble();
+      final dy = (rightEye.position.y - leftEye.position.y).toDouble();
+      tilt = _atan2Degrees(dy, dx).abs();
+      if (tilt > _maxTiltDegrees) {
+        return FrameQualityResult(
+          accepted: false,
+          score: 0,
+          rejectReason: 'Kepala terlalu miring',
+        );
+      }
+    }
+
+    final sizeScore = (faceSize / shorter / 0.5).clamp(0.0, 1.0);
+    final tiltScore = tilt > 0
+        ? (1.0 - tilt / _maxTiltDegrees).clamp(0.0, 1.0)
+        : 1.0;
+    final score = (sizeScore * 0.6 + tiltScore * 0.4).clamp(0.0, 1.0);
+
+    return FrameQualityResult(accepted: true, score: score);
+  }
+
+  /// Full evaluate with pixel-level checks (brightness + sharpness).
+  /// Use this during enrollment where accuracy matters more than speed.
   static FrameQualityResult evaluate(img.Image fullImage, Face face) {
     final box = face.boundingBox;
     final shorter = fullImage.width < fullImage.height

@@ -1,11 +1,7 @@
 import 'dart:async';
-import 'dart:io';
-import 'dart:typed_data';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
-import 'package:image/image.dart' as img;
 import '../../../shared/theme/app_colors.dart';
 import '../../../shared/models/app_models.dart';
 import '../../../shared/services/attendance_service.dart';
@@ -46,8 +42,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   // Throttle recognition agar tidak spam inference.
   bool _inferencing = false;
-  static const Duration _inferenceThrottle = Duration(milliseconds: 800);
+  static const Duration _inferenceThrottle = Duration(milliseconds: 400);
   DateTime _lastInference = DateTime(0);
+
+  // Temporal smoothing — rata-rata embedding dari N frame terakhir
+  // sebelum matching agar hasil lebih stabil.
+  static const int _smoothingWindow = 5;
+  final List<List<double>> _embeddingBuffer = [];
 
   DateTime get _today =>
       DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
@@ -97,6 +98,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   void _onLiveRecognition(LiveRecognitionResult result) {
     if (_processing || _isCheckedOut) return;
     if (result.status == LiveRecognitionStatus.noFace) {
+      _embeddingBuffer.clear();
       if (_liveRecognized || _liveSimilarity > 0) {
         setState(() {
           _liveRecognized = false;
@@ -107,13 +109,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       return;
     }
 
-    // Frame ada wajah tapi belum ada data untuk di-infer.
-    final fullImage = result.fullImage;
-    final face = result.face;
-    if (fullImage == null || face == null) {
-      if (!_recognizing) {
-        setState(() => _recognizing = true);
-      }
+    // Frame ada wajah tapi belum ada face object untuk di-infer.
+    if (result.face == null) {
+      if (!_recognizing) setState(() => _recognizing = true);
       return;
     }
 
@@ -132,11 +130,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       final uid = _cachedUid;
       if (stored == null || stored.isEmpty || uid == null) return;
 
-      final fullImage = frame.fullImage!;
       final face = frame.face!;
 
       List<double>? queryEmbedding;
-      if (frame.nv21Bytes != null && Platform.isAndroid) {
+      if (frame.nv21Bytes != null) {
         queryEmbedding = await FaceRecognitionService.instance
             .extractEmbeddingFromNv21(
               nv21Bytes: frame.nv21Bytes!,
@@ -146,16 +143,27 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               face: face,
             )
             .timeout(const Duration(seconds: 4));
-      } else {
+      } else if (frame.fullImage != null) {
         queryEmbedding = await FaceRecognitionService.instance
-            .extractEmbedding(fullImage, face)
+            .extractEmbedding(frame.fullImage!, face)
             .timeout(const Duration(seconds: 4));
+      } else {
+        return;
       }
 
       if (queryEmbedding == null || !mounted) return;
 
+      // Temporal smoothing: tambah ke buffer, buang yang paling lama.
+      _embeddingBuffer.add(queryEmbedding);
+      if (_embeddingBuffer.length > _smoothingWindow) {
+        _embeddingBuffer.removeAt(0);
+      }
+      final smoothedEmbedding = _embeddingBuffer.length > 1
+          ? FaceRecognitionService.averageEmbeddings(_embeddingBuffer)
+          : queryEmbedding;
+
       final result = FaceRecognitionService.instance.findBestMatchMulti(
-        queryEmbedding,
+        smoothedEmbedding,
         {uid: stored},
       );
 
@@ -167,14 +175,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         _recognizing = false;
         if (result.matched) {
           _lastRecognizedFrame = _RecognizedFrame(
-            queryEmbedding: queryEmbedding!,
-            fullImage: fullImage,
-            inputImage: frame.inputImage!,
-            nv21Bytes: frame.nv21Bytes,
-            rawWidth: frame.rawWidth,
-            rawHeight: frame.rawHeight,
-            rotation: frame.rotation!,
-            face: face,
+            queryEmbedding: smoothedEmbedding,
           );
         } else {
           _lastRecognizedFrame = null;
@@ -418,8 +419,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                   Expanded(child: _buildCameraArea()),
                   const SizedBox(height: 10),
                   if (!_isCheckedOut && !kIsWeb) _buildRecognitionStatus(),
-                  const SizedBox(height: 10),
-                  _buildSupportingInfo(),
                   const SizedBox(height: 14),
                   _buildActionButton(),
                 ],
@@ -431,109 +430,60 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     );
   }
 
-  // ── Recognition status bar ────────────────────────────────────────────────
+  // ── Recognition status ────────────────────────────────────────────────────
 
   Widget _buildRecognitionStatus() {
-    if (_processing) {
-      return _statusChip(
-        icon: Icons.hourglass_top_rounded,
-        label: 'Menyimpan presensi...',
-        color: AppColors.primary,
-        bg: AppColors.primaryLight,
-      );
-    }
+    final (icon, label, color, bg) = switch (true) {
+      _ when _processing => (
+          Icons.hourglass_top_rounded,
+          'Menyimpan presensi...',
+          AppColors.primary,
+          AppColors.primaryLight,
+        ),
+      _ when _liveRecognized => (
+          Icons.verified_rounded,
+          'Wajah dikenali — tekan tombol untuk presensi',
+          AppColors.success,
+          AppColors.successLight,
+        ),
+      _ when _recognizing => (
+          Icons.manage_search_rounded,
+          'Mengenali wajah...',
+          AppColors.warning,
+          AppColors.warningLight,
+        ),
+      _ when _liveSimilarity > 0 => (
+          Icons.face_retouching_off_rounded,
+          'Wajah tidak cocok, coba lagi',
+          AppColors.error,
+          AppColors.errorLight,
+        ),
+      _ => (
+          Icons.face_rounded,
+          'Arahkan wajah ke kamera',
+          AppColors.textSecondary,
+          AppColors.background,
+        ),
+    };
 
-    if (_liveRecognized) {
-      final pct = (_liveSimilarity * 100).toStringAsFixed(0);
-      return _statusChip(
-        icon: Icons.verified_rounded,
-        label: 'Wajah dikenali · $pct% — Tekan tombol untuk presensi',
-        color: AppColors.success,
-        bg: AppColors.successLight,
-        showBar: true,
-        barValue: _liveSimilarity,
-        barColor: AppColors.success,
-      );
-    }
-
-    if (_recognizing) {
-      return _statusChip(
-        icon: Icons.manage_search_rounded,
-        label: 'Mengenali wajah...',
-        color: AppColors.warning,
-        bg: AppColors.warningLight,
-      );
-    }
-
-    if (_liveSimilarity > 0) {
-      final pct = (_liveSimilarity * 100).toStringAsFixed(0);
-      return _statusChip(
-        icon: Icons.face_retouching_off_rounded,
-        label: 'Wajah belum dikenali · $pct%',
-        color: AppColors.error,
-        bg: AppColors.errorLight,
-        showBar: true,
-        barValue: _liveSimilarity,
-        barColor: AppColors.error,
-      );
-    }
-
-    return _statusChip(
-      icon: Icons.face_rounded,
-      label: 'Arahkan wajah ke kamera',
-      color: AppColors.textSecondary,
-      bg: AppColors.background,
-    );
-  }
-
-  Widget _statusChip({
-    required IconData icon,
-    required String label,
-    required Color color,
-    required Color bg,
-    bool showBar = false,
-    double barValue = 0,
-    Color barColor = AppColors.primary,
-  }) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
         color: bg,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withValues(alpha: 0.25)),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.2)),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Row(
-            children: [
-              Icon(icon, size: 15, color: color),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: color,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          if (showBar) ...[
-            const SizedBox(height: 6),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: barValue.clamp(0.0, 1.0),
-                backgroundColor: color.withValues(alpha: 0.15),
-                color: barColor,
-                minHeight: 4,
-              ),
+          Icon(icon, size: 15, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color),
             ),
-          ],
+          ),
         ],
       ),
     );
@@ -682,12 +632,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     final record = _todayRecord;
     final cin = record?.checkIn;
     final cout = record?.checkOut;
-    final cinText = cin != null ? _fmtTod(cin) : '--:--';
-    final coutText = cout != null ? _fmtTod(cout) : '--:--';
-    final duration = (cin != null && cout != null) ? _duration(cin, cout) : '--j --m';
 
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(14),
@@ -695,159 +642,51 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       ),
       child: Row(
         children: [
-          Expanded(
-            child: _summarySlot(
-              icon: Icons.login_rounded,
-              iconColor: cin != null ? AppColors.success : AppColors.textSecondary,
-              iconBg: cin != null ? AppColors.successLight : AppColors.background,
-              label: 'Check-in',
-              value: cinText,
-              valueColor: cin != null ? AppColors.textPrimary : AppColors.textSecondary,
-            ),
-          ),
-          _verticalDivider(),
-          Expanded(
-            child: _summarySlot(
-              icon: Icons.logout_rounded,
-              iconColor: cout != null ? AppColors.error : AppColors.textSecondary,
-              iconBg: cout != null ? AppColors.errorLight : AppColors.background,
-              label: 'Check-out',
-              value: coutText,
-              valueColor: cout != null ? AppColors.textPrimary : AppColors.textSecondary,
-            ),
-          ),
-          _verticalDivider(),
-          Expanded(
-            child: _summarySlot(
-              icon: Icons.schedule_rounded,
-              iconColor: AppColors.primary,
-              iconBg: AppColors.primaryLight,
-              label: 'Durasi',
-              value: duration,
-              valueColor: AppColors.textPrimary,
-            ),
-          ),
+          Expanded(child: _timeSlot('Check-in', cin, AppColors.success)),
+          Container(width: 1, height: 36, color: AppColors.border),
+          Expanded(child: _timeSlot('Check-out', cout, AppColors.error)),
         ],
       ),
     );
   }
 
-  Widget _summarySlot({
-    required IconData icon,
-    required Color iconColor,
-    required Color iconBg,
-    required String label,
-    required String value,
-    required Color valueColor,
-  }) {
+  Widget _timeSlot(String label, TimeOfDay? time, Color activeColor) {
+    final hasTime = time != null;
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Container(
-          padding: const EdgeInsets.all(7),
-          decoration: BoxDecoration(color: iconBg, borderRadius: BorderRadius.circular(8)),
-          child: Icon(icon, size: 16, color: iconColor),
-        ),
-        const SizedBox(height: 8),
-        Text(label, style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
-        const SizedBox(height: 2),
         Text(
-          value,
+          label,
+          style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          hasTime ? _fmtTod(time) : '--:--',
           style: TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.bold,
-            color: valueColor,
-            letterSpacing: -0.3,
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
+            color: hasTime ? activeColor : AppColors.textSecondary,
+            letterSpacing: -0.5,
           ),
         ),
       ],
     );
   }
 
-  Widget _verticalDivider() => Container(
-    width: 1,
-    height: 42,
-    color: AppColors.border,
-    margin: const EdgeInsets.symmetric(horizontal: 4),
-  );
-
   // ── Camera area ───────────────────────────────────────────────────────────
 
   Widget _buildCameraArea() {
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.border),
-      ),
-      padding: const EdgeInsets.all(14),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: AppColors.primaryLight,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Icon(
-                  Icons.face_retouching_natural_rounded,
-                  size: 16,
-                  color: AppColors.primary,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Verifikasi Wajah',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.textPrimary,
-                      ),
-                    ),
-                    const SizedBox(height: 1),
-                    Text(
-                      _cameraSubtitle(),
-                      style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
-                    ),
-                  ],
-                ),
-              ),
-              if (_processing)
-                const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
-                ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Expanded(
-            child: _isCheckedOut
-                ? _buildCompletedAttendanceView()
-                : CameraFaceView(
-                    key: _cameraKey,
-                    active: widget.isActive,
-                    hint: 'Arahkan wajah ke kamera',
-                    liveMode: !kIsWeb,
-                    onLiveRecognition: _onLiveRecognition,
-                  ),
-          ),
-        ],
-      ),
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: _isCheckedOut
+          ? _buildCompletedAttendanceView()
+          : CameraFaceView(
+              key: _cameraKey,
+              active: widget.isActive,
+              hint: 'Arahkan wajah ke kamera',
+              liveMode: !kIsWeb,
+              onLiveRecognition: _onLiveRecognition,
+            ),
     );
-  }
-
-  String _cameraSubtitle() {
-    if (_isCheckedOut) return 'Presensi hari ini sudah selesai';
-    if (_liveRecognized) return 'Wajah dikenali — tekan tombol untuk presensi';
-    return 'Kamera aktif — arahkan wajah ke tengah';
   }
 
   // ── Supporting info ───────────────────────────────────────────────────────
@@ -938,71 +777,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     return 'Terima kasih, sampai jumpa lagi';
   }
 
-  Widget _buildSupportingInfo() {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.border),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      child: Row(
-        children: [
-          Expanded(
-            child: _infoItem(
-              icon: Icons.verified_user_rounded,
-              label: 'Metode',
-              value: 'Face Recognition (CNN)',
-            ),
-          ),
-          _infoDivider(),
-          Expanded(
-            child: _infoItem(
-              icon: Icons.location_on_rounded,
-              label: 'Lokasi',
-              value: 'Kantor Pusat',
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _infoItem({required IconData icon, required String label, required String value}) {
-    return Row(
-      children: [
-        Icon(icon, size: 16, color: AppColors.primary),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label, style: const TextStyle(fontSize: 10, color: AppColors.textSecondary)),
-              const SizedBox(height: 1),
-              Text(
-                value,
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textPrimary,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _infoDivider() => Container(
-    width: 1,
-    height: 28,
-    color: AppColors.border,
-    margin: const EdgeInsets.symmetric(horizontal: 8),
-  );
-
   // ── Action button ─────────────────────────────────────────────────────────
 
   Widget _buildActionButton() {
@@ -1086,12 +860,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   String _fmtTod(TimeOfDay t) =>
       '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
-  String _duration(TimeOfDay a, TimeOfDay b) {
-    var mins = (b.hour * 60 + b.minute) - (a.hour * 60 + a.minute);
-    if (mins < 0) mins += 24 * 60;
-    if (mins <= 0) return '0j 00m';
-    return '${mins ~/ 60}j ${(mins % 60).toString().padLeft(2, '0')}m';
-  }
 
   String _todayLabel() {
     final now = DateTime.now();
@@ -1104,25 +872,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   }
 }
 
-/// Data frame yang berhasil dikenali, disimpan sampai user tekan tombol.
+/// Embedding yang berhasil dikenali, disimpan sampai user tekan tombol.
 class _RecognizedFrame {
   final List<double> queryEmbedding;
-  final img.Image fullImage;
-  final InputImage inputImage;
-  final Uint8List? nv21Bytes;
-  final int rawWidth;
-  final int rawHeight;
-  final InputImageRotation rotation;
-  final Face face;
-
-  const _RecognizedFrame({
-    required this.queryEmbedding,
-    required this.fullImage,
-    required this.inputImage,
-    this.nv21Bytes,
-    required this.rawWidth,
-    required this.rawHeight,
-    required this.rotation,
-    required this.face,
-  });
+  const _RecognizedFrame({required this.queryEmbedding});
 }
