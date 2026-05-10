@@ -1,52 +1,88 @@
 import 'package:flutter/material.dart';
+
 import '../../../../shared/theme/app_colors.dart';
 
-// ─── APP LOGO ─────────────────────────────────────────────────────────────────
+class AuthAssets {
+  AuthAssets._();
+
+  static const logo = 'public/Logo.png';
+  static const logoTransparent = 'public/logo-transparant.png';
+}
 
 class AppLogo extends StatelessWidget {
-  const AppLogo({super.key});
+  final double size;
+  final bool compact;
+
+  const AppLogo({super.key, this.size = 82, this.compact = false});
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        children: [
-          Container(
-            width: 72,
-            height: 72,
-            decoration: BoxDecoration(
-              color: AppColors.primaryLight,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: const Icon(
-              Icons.face_retouching_natural_rounded,
-              size: 36,
-              color: AppColors.primary,
-            ),
-          ),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _LogoMark(size: size),
+        if (!compact) ...[
           const SizedBox(height: 14),
           const Text(
-            'FaceWork Tracker',
+            'Presensia',
             style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
+              fontSize: 22,
+              fontWeight: FontWeight.w800,
               color: AppColors.textPrimary,
-              letterSpacing: -0.2,
             ),
           ),
-          const SizedBox(height: 2),
+          const SizedBox(height: 4),
           const Text(
-            'Sistem Absensi Karyawan',
-            style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            'Presensi wajah dan produktivitas kerja',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 12,
+              color: AppColors.textSecondary,
+              height: 1.35,
+            ),
           ),
         ],
-      ),
+      ],
     );
   }
 }
 
-// ─── AUTH TEXT FIELD ──────────────────────────────────────────────────────────
+class _LogoMark extends StatelessWidget {
+  final double size;
+
+  const _LogoMark({required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      padding: EdgeInsets.all(size * 0.12),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(size * 0.28),
+        border: Border.all(color: AppColors.border),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.primary.withValues(alpha: 0.10),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Image.asset(
+        AuthAssets.logoTransparent,
+        fit: BoxFit.contain,
+        filterQuality: FilterQuality.medium,
+        errorBuilder: (_, _, _) => const Icon(
+          Icons.face_retouching_natural_rounded,
+          color: AppColors.primary,
+          size: 38,
+        ),
+      ),
+    );
+  }
+}
 
 class AuthField extends StatelessWidget {
   final TextEditingController controller;
@@ -55,6 +91,7 @@ class AuthField extends StatelessWidget {
   final bool obscureText;
   final TextInputType keyboardType;
   final TextInputAction textInputAction;
+  final Iterable<String>? autofillHints;
   final Widget? suffixIcon;
   final String? Function(String?)? validator;
   final void Function(String)? onChanged;
@@ -68,6 +105,7 @@ class AuthField extends StatelessWidget {
     this.obscureText = false,
     this.keyboardType = TextInputType.text,
     this.textInputAction = TextInputAction.next,
+    this.autofillHints,
     this.suffixIcon,
     this.validator,
     this.onChanged,
@@ -81,80 +119,70 @@ class AuthField extends StatelessWidget {
       obscureText: obscureText,
       keyboardType: keyboardType,
       textInputAction: textInputAction,
+      autofillHints: autofillHints,
       onChanged: onChanged,
       onFieldSubmitted: onFieldSubmitted,
-      style: const TextStyle(
-        fontSize: 14,
-        color: AppColors.textPrimary,
-      ),
+      style: const TextStyle(fontSize: 14, color: AppColors.textPrimary),
       decoration: InputDecoration(
         labelText: label,
         labelStyle: const TextStyle(
-          fontSize: 14,
+          fontSize: 13,
           color: AppColors.textSecondary,
         ),
-        prefixIcon: Icon(icon, size: 18, color: AppColors.textSecondary),
+        prefixIcon: Icon(icon, size: 19, color: AppColors.textSecondary),
         suffixIcon: suffixIcon,
         filled: true,
         fillColor: AppColors.surface,
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 16,
-          vertical: 16,
+          vertical: 15,
         ),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: AppColors.border),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: AppColors.border),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
-        ),
-        errorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: AppColors.error),
-        ),
-        focusedErrorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: AppColors.error, width: 1.5),
-        ),
+        border: _fieldBorder(AppColors.border),
+        enabledBorder: _fieldBorder(AppColors.border),
+        focusedBorder: _fieldBorder(AppColors.primary, width: 1.5),
+        errorBorder: _fieldBorder(AppColors.error),
+        focusedErrorBorder: _fieldBorder(AppColors.error, width: 1.5),
         errorStyle: const TextStyle(fontSize: 12, color: AppColors.error),
       ),
       validator: validator,
     );
   }
-}
 
-// ─── PRIMARY BUTTON ───────────────────────────────────────────────────────────
+  OutlineInputBorder _fieldBorder(Color color, {double width = 1}) {
+    return OutlineInputBorder(
+      borderRadius: BorderRadius.circular(14),
+      borderSide: BorderSide(color: color, width: width),
+    );
+  }
+}
 
 class PrimaryButton extends StatelessWidget {
   final String label;
   final bool loading;
+  final IconData? icon;
   final VoidCallback? onPressed;
 
   const PrimaryButton({
     super.key,
     required this.label,
     this.loading = false,
+    this.icon,
     this.onPressed,
   });
 
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 50,
+      height: 52,
       child: ElevatedButton(
         onPressed: loading ? null : onPressed,
         style: ElevatedButton.styleFrom(
           backgroundColor: AppColors.primary,
-          disabledBackgroundColor: AppColors.primary.withValues(alpha: 0.6),
+          disabledBackgroundColor: AppColors.primary.withValues(alpha: 0.55),
           foregroundColor: Colors.white,
           elevation: 0,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(14),
           ),
         ),
         child: loading
@@ -166,20 +194,27 @@ class PrimaryButton extends StatelessWidget {
                   strokeWidth: 2,
                 ),
               )
-            : Text(
-                label,
-                style: const TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.1,
-                ),
+            : Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (icon != null) ...[
+                    Icon(icon, size: 18),
+                    const SizedBox(width: 8),
+                  ],
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
               ),
       ),
     );
   }
 }
-
-// ─── ERROR BANNER ─────────────────────────────────────────────────────────────
 
 class ErrorBanner extends StatelessWidget {
   final String message;
@@ -189,11 +224,11 @@ class ErrorBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
         color: AppColors.errorLight,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: AppColors.error.withValues(alpha: 0.25)),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.error.withValues(alpha: 0.20)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -202,11 +237,11 @@ class ErrorBanner extends StatelessWidget {
             padding: EdgeInsets.only(top: 1),
             child: Icon(
               Icons.error_outline_rounded,
-              size: 16,
+              size: 17,
               color: AppColors.error,
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 9),
           Expanded(
             child: Text(
               message,
@@ -222,8 +257,6 @@ class ErrorBanner extends StatelessWidget {
     );
   }
 }
-
-// ─── SUCCESS STATE ────────────────────────────────────────────────────────────
 
 class SuccessState extends StatelessWidget {
   final IconData icon;
@@ -245,18 +278,18 @@ class SuccessState extends StatelessWidget {
   Widget build(BuildContext context) {
     return Center(
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 32),
+        padding: const EdgeInsets.symmetric(horizontal: 28),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 64,
-              height: 64,
+              width: 66,
+              height: 66,
               decoration: BoxDecoration(
-                color: const Color(0xFFECFDF5),
+                color: AppColors.successLight,
                 shape: BoxShape.circle,
                 border: Border.all(
-                  color: AppColors.success.withValues(alpha: 0.2),
+                  color: AppColors.success.withValues(alpha: 0.18),
                 ),
               ),
               child: Icon(icon, size: 30, color: AppColors.success),
@@ -264,11 +297,11 @@ class SuccessState extends StatelessWidget {
             const SizedBox(height: 20),
             Text(
               title,
+              textAlign: TextAlign.center,
               style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
+                fontSize: 19,
+                fontWeight: FontWeight.w800,
                 color: AppColors.textPrimary,
-                letterSpacing: -0.3,
               ),
             ),
             const SizedBox(height: 10),
@@ -281,7 +314,7 @@ class SuccessState extends StatelessWidget {
                 height: 1.55,
               ),
             ),
-            const SizedBox(height: 32),
+            const SizedBox(height: 30),
             SizedBox(
               width: double.infinity,
               child: PrimaryButton(label: actionLabel, onPressed: onAction),
@@ -292,8 +325,6 @@ class SuccessState extends StatelessWidget {
     );
   }
 }
-
-// ─── MINIMAL APP BAR ──────────────────────────────────────────────────────────
 
 PreferredSizeWidget minimalAppBar({
   required String title,
@@ -315,9 +346,8 @@ PreferredSizeWidget minimalAppBar({
       title,
       style: const TextStyle(
         fontSize: 16,
-        fontWeight: FontWeight.w600,
+        fontWeight: FontWeight.w700,
         color: AppColors.textPrimary,
-        letterSpacing: -0.2,
       ),
     ),
     bottom: const PreferredSize(

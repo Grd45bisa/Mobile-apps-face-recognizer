@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../../../shared/providers/notification_provider.dart';
 import '../../../shared/services/auth_service.dart';
 import '../../../shared/services/realtime_sync_service.dart';
@@ -6,6 +7,7 @@ import '../../../shared/store/app_store.dart';
 import '../../../shared/theme/app_colors.dart';
 import '../../main_nav/main_screen.dart';
 import 'login_screen.dart';
+import 'widgets/auth_widgets.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -24,7 +26,7 @@ class _SplashScreenState extends State<SplashScreen>
     super.initState();
     _anim = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 600),
+      duration: const Duration(milliseconds: 450),
     );
     _fadeIn = CurvedAnimation(parent: _anim, curve: Curves.easeOut);
     _anim.forward();
@@ -38,8 +40,7 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<void> _checkSession() async {
-    // Beri waktu splash tampil sebentar supaya tidak terlalu kilat
-    await Future.delayed(const Duration(milliseconds: 1200));
+    await Future.delayed(const Duration(milliseconds: 850));
     if (!mounted) return;
 
     if (AuthService.instance.isSignedIn) {
@@ -61,7 +62,7 @@ class _SplashScreenState extends State<SplashScreen>
         pageBuilder: (ctx, a1, a2) => screen,
         transitionsBuilder: (ctx, anim, a2, child) =>
             FadeTransition(opacity: anim, child: child),
-        transitionDuration: const Duration(milliseconds: 350),
+        transitionDuration: const Duration(milliseconds: 260),
       ),
     );
   }
@@ -73,55 +74,19 @@ class _SplashScreenState extends State<SplashScreen>
       body: FadeTransition(
         opacity: _fadeIn,
         child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _buildLogo(),
-              const SizedBox(height: 48),
-              _buildLoader(),
-            ],
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const AppLogo(size: 92),
+                const SizedBox(height: 38),
+                _buildLoader(),
+              ],
+            ),
           ),
         ),
       ),
-    );
-  }
-
-  Widget _buildLogo() {
-    return Column(
-      children: [
-        Container(
-          width: 80,
-          height: 80,
-          decoration: BoxDecoration(
-            color: AppColors.primaryLight,
-            borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: AppColors.border),
-          ),
-          child: const Icon(
-            Icons.face_retouching_natural_rounded,
-            size: 40,
-            color: AppColors.primary,
-          ),
-        ),
-        const SizedBox(height: 20),
-        const Text(
-          'FaceWork Tracker',
-          style: TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-            color: AppColors.textPrimary,
-            letterSpacing: -0.3,
-          ),
-        ),
-        const SizedBox(height: 6),
-        const Text(
-          'Sistem Absensi Karyawan',
-          style: TextStyle(
-            fontSize: 13,
-            color: AppColors.textSecondary,
-          ),
-        ),
-      ],
     );
   }
 
@@ -133,15 +98,15 @@ class _SplashScreenState extends State<SplashScreen>
           height: 24,
           child: CircularProgressIndicator(
             color: AppColors.primary,
-            strokeWidth: 2.5,
+            strokeWidth: 2.4,
           ),
         ),
         const SizedBox(height: 14),
         Text(
-          'Memuat...',
+          'Menyiapkan ruang kerja...',
           style: TextStyle(
             fontSize: 12,
-            color: AppColors.textSecondary.withValues(alpha: 0.7),
+            color: AppColors.textSecondary.withValues(alpha: 0.78),
           ),
         ),
       ],

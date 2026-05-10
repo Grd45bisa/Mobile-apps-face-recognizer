@@ -103,6 +103,9 @@ Catatan penting:
 - Enrollment hanya mengambil **1 foto wajah**.
 - Tidak ada lagi enrollment multi-pose depan/kiri/kanan/senyum.
 - Embedding disimpan melalui `EmbeddingSyncService.saveEmbedding`.
+- Satu akun hanya boleh memiliki satu wajah aktif.
+- Wajah yang sudah terdaftar di akun lain tidak boleh digunakan untuk enrollment akun berbeda.
+- Jika data wajah tidak ada di SQLite tetapi ada di Supabase, aplikasi otomatis mengambil backup tersebut dan menyimpannya kembali ke SQLite.
 
 ### 2. Check-In
 
@@ -189,6 +192,8 @@ Karakteristik saat ini:
 - Sistem mengambil beberapa sampel jika wajah tidak langsung cocok.
 - Jika wajah cocok, presensi disimpan dan popup sukses muncul.
 - Jika wajah tidak cocok setelah beberapa sampel, user diminta konfirmasi ulang.
+- Presensi hanya membandingkan wajah dengan embedding milik akun yang sedang login.
+- Presensi tetap membutuhkan koneksi internet untuk menyimpan check-in/check-out.
 
 ### 2. Enrollment Wajah 1 Kali
 

@@ -8,6 +8,8 @@ Project ini memakai kamera perangkat, ML Kit Face Detection, MobileFaceNet TFLit
 
 - Login, register, reset password, dan session auth dengan Supabase.
 - Enrollment wajah 1 kali menggunakan 1 foto wajah.
+- Satu akun hanya boleh memiliki satu wajah aktif.
+- Wajah yang sudah terdaftar di akun lain tidak boleh dipakai untuk enrollment akun berbeda.
 - Check-in dan check-out melalui tombol konfirmasi.
 - Frame wajah muncul saat proses scan/verifikasi berlangsung.
 - Analisis wajah dengan beberapa sampel sebelum presensi dinyatakan gagal.
@@ -30,6 +32,7 @@ Buka halaman pendaftaran wajah
   -> crop wajah dari bounding box
   -> resize ke 112x112
   -> MobileFaceNet membuat embedding 192 dimensi
+  -> Supabase mengecek wajah ini belum dipakai akun lain
   -> embedding disimpan untuk user tersebut
 ```
 
@@ -172,6 +175,9 @@ Untuk menguji kasus gagal, gunakan wajah berbeda atau kondisi wajah yang tidak s
 - Matching memakai Euclidean distance.
 - Threshold saat ini memakai nilai `1.25`.
 - Jika wajah tidak cocok, sistem mencoba maksimal beberapa sampel sebelum menggagalkan presensi.
+- Presensi hanya mencocokkan wajah terhadap embedding milik akun yang sedang login.
+- Jika SQLite belum punya embedding akun tersebut, aplikasi mengambil backup dari Supabase lalu menyimpannya kembali ke SQLite.
+- Enrollment memakai RPC Supabase `find_duplicate_face_owner` untuk mencegah satu wajah dipakai di beberapa akun.
 
 Nilai threshold bisa dikalibrasi lagi jika hasil di perangkat nyata terlalu ketat atau terlalu longgar.
 

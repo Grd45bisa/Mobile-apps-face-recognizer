@@ -42,7 +42,11 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: ListenableBuilder(
-        listenable: Listenable.merge([_controller, AppStore.instance, NotificationProvider.instance]),
+        listenable: Listenable.merge([
+          _controller,
+          AppStore.instance,
+          NotificationProvider.instance,
+        ]),
         builder: (context, _) {
           return NestedScrollView(
             headerSliverBuilder: (ctx, _) => [_buildAppBar(ctx)],
@@ -56,8 +60,6 @@ class _HomeScreenState extends State<HomeScreen> {
   // ─── APP BAR ──────────────────────────────────────────────────────────────
 
   SliverAppBar _buildAppBar(BuildContext context) {
-    final profile = AppStore.instance.profile;
-    final initials = profile?.initials ?? '?';
     final unread = NotificationProvider.instance.unreadCount;
 
     return SliverAppBar(
@@ -66,14 +68,32 @@ class _HomeScreenState extends State<HomeScreen> {
       backgroundColor: AppColors.surface,
       elevation: 0,
       surfaceTintColor: Colors.transparent,
-      titleSpacing: 16,
-      title: const Text(
-        'FaceWork',
-        style: TextStyle(
-          color: AppColors.primary,
-          fontWeight: FontWeight.bold,
-          fontSize: 18,
-        ),
+      titleSpacing: 14,
+      title: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Image.asset(
+            'public/logo-transparant.png',
+            width: 38,
+            height: 38,
+            fit: BoxFit.contain,
+            filterQuality: FilterQuality.medium,
+            errorBuilder: (_, _, _) => const Icon(
+              Icons.face_retouching_natural_rounded,
+              size: 28,
+              color: AppColors.primary,
+            ),
+          ),
+          const SizedBox(width: 8),
+          const Text(
+            'Presensia',
+            style: TextStyle(
+              color: AppColors.primary,
+              fontWeight: FontWeight.w900,
+              fontSize: 19,
+            ),
+          ),
+        ],
       ),
       bottom: const PreferredSize(
         preferredSize: Size.fromHeight(1),
@@ -82,8 +102,8 @@ class _HomeScreenState extends State<HomeScreen> {
       actions: [
         IconButton(
           onPressed: () => showNotificationPanel(context),
-          padding: const EdgeInsets.all(8),
-          constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 42, minHeight: 42),
           icon: Stack(
             clipBehavior: Clip.none,
             children: [
@@ -118,49 +138,40 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
         ),
-        GestureDetector(
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const ProfileScreen()),
+        IconButton(
+          onPressed: _openProfile,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 42, minHeight: 42),
+          icon: const Icon(
+            Icons.person_outline_rounded,
+            color: AppColors.textPrimary,
+            size: 24,
           ),
-          child: Container(
-            margin: const EdgeInsets.only(right: 16, left: 4),
-            child: CircleAvatar(
-              radius: 17,
-              backgroundColor: AppColors.primaryLight,
-              child: profile?.avatarUrl != null
-                  ? ClipOval(
-                      child: Image.network(
-                        profile!.avatarUrl!,
-                        width: 34,
-                        height: 34,
-                        fit: BoxFit.cover,
-                        errorBuilder: (ctx, e, s) => _avatarText(initials),
-                      ),
-                    )
-                  : _avatarText(initials),
-            ),
-          ),
+          tooltip: 'Profil',
         ),
+        const SizedBox(width: 10),
       ],
     );
   }
 
   Widget _avatarText(String initials) => Text(
-        initials,
-        style: const TextStyle(
-          color: AppColors.primary,
-          fontWeight: FontWeight.bold,
-          fontSize: 13,
-        ),
-      );
+    initials,
+    style: const TextStyle(
+      color: AppColors.primary,
+      fontWeight: FontWeight.bold,
+      fontSize: 13,
+    ),
+  );
 
   // ─── BODY ─────────────────────────────────────────────────────────────────
 
   Widget _buildBody(BuildContext context) {
     if (_controller.isLoading && AppStore.instance.profile == null) {
       return const Center(
-        child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2),
+        child: CircularProgressIndicator(
+          color: AppColors.primary,
+          strokeWidth: 2,
+        ),
       );
     }
 
@@ -173,30 +184,29 @@ class _HomeScreenState extends State<HomeScreen> {
       color: AppColors.primary,
       onRefresh: _controller.refresh,
       child: ListView(
-        padding: EdgeInsets.fromLTRB(16, 16, 16, 120 + bottomInset),
+        padding: EdgeInsets.fromLTRB(16, 14, 16, 120 + bottomInset),
         children: [
           _buildGreeting(),
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
           _buildAttendanceCard(),
           const SizedBox(height: 12),
           _buildWeekProgress(),
           const SizedBox(height: 12),
           _buildReminderHighlight(),
           const SizedBox(height: 20),
-          _buildSectionLabel('Ringkasan Tracker'),
-          const SizedBox(height: 8),
+          _buildSectionHeader(
+            title: 'Ringkasan Tracker',
+            icon: Icons.timer_rounded,
+          ),
+          const SizedBox(height: 10),
           _buildTrackerSummary(),
           const SizedBox(height: 20),
-          Row(
-            children: [
-              Expanded(child: _buildSectionLabel('Aktivitas Hari Ini')),
-              _InlineLink(
-                label: 'Lihat semua',
-                onTap: _goToTracker,
-              ),
-            ],
+          _buildSectionHeader(
+            title: 'Aktivitas Hari Ini',
+            icon: Icons.work_history_rounded,
+            action: _InlineLink(label: 'Lihat semua', onTap: _goToTracker),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
           _buildTrackerHistory(),
         ],
       ),
@@ -267,42 +277,112 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _goToTracker() => widget.onGoToTracker?.call();
 
+  void _openProfile() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const ProfileScreen()),
+    );
+  }
+
   // ─── GREETING ─────────────────────────────────────────────────────────────
 
   Widget _buildGreeting() {
     final profile = AppStore.instance.profile;
-    final firstName = profile?.fullName.split(' ').first ?? 'Karyawan';
+    final fullName = profile?.fullName.trim().isNotEmpty == true
+        ? profile!.fullName.trim()
+        : 'Karyawan Presensia';
 
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '${_greetingPrefix()}, $firstName!',
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary,
-                  letterSpacing: -0.3,
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 15, 14, 15),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.border),
+        boxShadow: _softShadow(),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          _buildProfileAvatar(profile),
+          const SizedBox(width: 13),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${_greetingPrefix()},',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textSecondary,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 3),
-              Text(
-                _todayLabel(),
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: AppColors.textSecondary,
+                const SizedBox(height: 2),
+                Text(
+                  fullName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 19,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.textPrimary,
+                  ),
                 ),
-              ),
-            ],
+                const SizedBox(height: 4),
+                Text(
+                  _profileSubtitle(profile),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
-        _buildWorkStatusChip(),
-      ],
+          const SizedBox(width: 10),
+          _buildWorkStatusChip(),
+        ],
+      ),
     );
+  }
+
+  Widget _buildProfileAvatar(EmployeeProfile? profile) {
+    final initials = profile?.initials ?? '?';
+    final avatarUrl = profile?.avatarUrl;
+
+    return Container(
+      width: 58,
+      height: 58,
+      decoration: BoxDecoration(
+        color: AppColors.primaryLight,
+        shape: BoxShape.circle,
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.18)),
+      ),
+      child: ClipOval(
+        child: avatarUrl != null
+            ? Image.network(
+                avatarUrl,
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => Center(child: _avatarText(initials)),
+              )
+            : Center(child: _avatarText(initials)),
+      ),
+    );
+  }
+
+  String _profileSubtitle(EmployeeProfile? profile) {
+    final position = profile?.position?.trim();
+    final department = profile?.department?.trim();
+    if (position != null && position.isNotEmpty) {
+      if (department != null && department.isNotEmpty) {
+        return '$position - $department';
+      }
+      return position;
+    }
+    if (department != null && department.isNotEmpty) return department;
+    return profile?.email ?? _todayLabel();
   }
 
   Widget _buildWorkStatusChip() {
@@ -356,15 +436,37 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ─── SECTION LABEL ────────────────────────────────────────────────────────
 
-  Widget _buildSectionLabel(String title) => Text(
-        title,
-        style: const TextStyle(
-          fontSize: 13,
-          fontWeight: FontWeight.w700,
-          color: AppColors.textSecondary,
-          letterSpacing: 0.3,
+  Widget _buildSectionHeader({
+    required String title,
+    required IconData icon,
+    Widget? action,
+  }) {
+    return Row(
+      children: [
+        Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: AppColors.primaryLight,
+            borderRadius: BorderRadius.circular(9),
+          ),
+          child: Icon(icon, size: 16, color: AppColors.primary),
         ),
-      );
+        const SizedBox(width: 9),
+        Expanded(
+          child: Text(
+            title,
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w800,
+              color: AppColors.textPrimary,
+            ),
+          ),
+        ),
+        ?action,
+      ],
+    );
+  }
 
   // ─── KEHADIRAN HARI INI ───────────────────────────────────────────────────
 
@@ -408,8 +510,9 @@ class _HomeScreenState extends State<HomeScreen> {
     return Container(
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: AppColors.border),
+        boxShadow: _softShadow(),
       ),
       child: Column(
         children: [
@@ -459,8 +562,12 @@ class _HomeScreenState extends State<HomeScreen> {
                     time: cinTime,
                     sub: cinSub,
                     icon: Icons.login_rounded,
-                    color: hasCheckin ? AppColors.success : AppColors.textSecondary,
-                    bgColor: hasCheckin ? AppColors.successLight : AppColors.background,
+                    color: hasCheckin
+                        ? AppColors.success
+                        : AppColors.textSecondary,
+                    bgColor: hasCheckin
+                        ? AppColors.successLight
+                        : AppColors.background,
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -470,8 +577,12 @@ class _HomeScreenState extends State<HomeScreen> {
                     time: coutTime,
                     sub: coutSub,
                     icon: Icons.logout_rounded,
-                    color: hasCheckout ? AppColors.error : AppColors.textSecondary,
-                    bgColor: hasCheckout ? AppColors.errorLight : AppColors.background,
+                    color: hasCheckout
+                        ? AppColors.error
+                        : AppColors.textSecondary,
+                    bgColor: hasCheckout
+                        ? AppColors.errorLight
+                        : AppColors.background,
                   ),
                 ),
               ],
@@ -482,7 +593,7 @@ class _HomeScreenState extends State<HomeScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: const BoxDecoration(
               color: AppColors.background,
-              borderRadius: BorderRadius.vertical(bottom: Radius.circular(16)),
+              borderRadius: BorderRadius.vertical(bottom: Radius.circular(18)),
             ),
             child: Wrap(
               spacing: 12,
@@ -537,8 +648,9 @@ class _HomeScreenState extends State<HomeScreen> {
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: AppColors.border),
+        boxShadow: _softShadow(),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -569,7 +681,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 5,
+                ),
                 decoration: BoxDecoration(
                   color: AppColors.primaryLight,
                   borderRadius: BorderRadius.circular(20),
@@ -648,8 +763,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     dayLabels[i],
                     style: TextStyle(
                       fontSize: 11,
-                      fontWeight:
-                          isToday ? FontWeight.bold : FontWeight.normal,
+                      fontWeight: isToday ? FontWeight.bold : FontWeight.normal,
                       color: isToday
                           ? AppColors.primary
                           : AppColors.textSecondary,
@@ -674,8 +788,9 @@ class _HomeScreenState extends State<HomeScreen> {
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
           color: AppColors.surface,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(18),
           border: Border.all(color: AppColors.border),
+          boxShadow: _softShadow(),
         ),
         child: Row(
           children: [
@@ -728,8 +843,9 @@ class _HomeScreenState extends State<HomeScreen> {
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: AppColors.border),
+        boxShadow: _softShadow(),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -823,9 +939,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     const SizedBox(width: 5),
                     Text(
-                      next.isAllDay
-                          ? 'Seharian'
-                          : _formatReminderTime(next),
+                      next.isAllDay ? 'Seharian' : _formatReminderTime(next),
                       style: const TextStyle(
                         fontSize: 11,
                         color: AppColors.textSecondary,
@@ -868,8 +982,9 @@ class _HomeScreenState extends State<HomeScreen> {
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: AppColors.border),
+        boxShadow: _softShadow(),
       ),
       child: Row(
         children: [
@@ -905,20 +1020,29 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (worklogs.isEmpty) {
       return Container(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.fromLTRB(20, 22, 20, 22),
         decoration: BoxDecoration(
           color: AppColors.surface,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(18),
           border: Border.all(color: AppColors.border),
+          boxShadow: _softShadow(),
         ),
         child: Column(
           children: [
-            Icon(
-              Icons.inbox_rounded,
-              size: 36,
-              color: AppColors.textSecondary.withValues(alpha: 0.35),
+            Container(
+              width: 54,
+              height: 54,
+              decoration: BoxDecoration(
+                color: AppColors.primaryLight,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: const Icon(
+                Icons.add_task_rounded,
+                size: 26,
+                color: AppColors.primary,
+              ),
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 12),
             const Text(
               'Belum ada aktivitas hari ini',
               style: TextStyle(
@@ -931,6 +1055,19 @@ class _HomeScreenState extends State<HomeScreen> {
             const Text(
               'Tambah pekerjaan lewat tab Tracker.',
               style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: _goToTracker,
+              icon: const Icon(Icons.timer_rounded, size: 17),
+              label: const Text('Buka Tracker'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.primary,
+                side: const BorderSide(color: AppColors.primary),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
             ),
           ],
         ),
@@ -951,8 +1088,9 @@ class _HomeScreenState extends State<HomeScreen> {
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: AppColors.border),
+        boxShadow: _softShadow(),
       ),
       child: Row(
         children: [
@@ -1039,10 +1177,28 @@ class _HomeScreenState extends State<HomeScreen> {
   String _todayLabel() {
     final now = DateTime.now();
     const months = [
-      'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
-      'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember',
+      'Januari',
+      'Februari',
+      'Maret',
+      'April',
+      'Mei',
+      'Juni',
+      'Juli',
+      'Agustus',
+      'September',
+      'Oktober',
+      'November',
+      'Desember',
     ];
-    const days = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
+    const days = [
+      'Senin',
+      'Selasa',
+      'Rabu',
+      'Kamis',
+      'Jumat',
+      'Sabtu',
+      'Minggu',
+    ];
     return '${days[now.weekday - 1]}, ${now.day} ${months[now.month - 1]} ${now.year}';
   }
 
@@ -1063,7 +1219,8 @@ class _HomeScreenState extends State<HomeScreen> {
     var total = 0;
     for (final wl in logs) {
       if (wl.startTime != null && wl.endTime != null) {
-        var m = (wl.endTime!.hour * 60 + wl.endTime!.minute) -
+        var m =
+            (wl.endTime!.hour * 60 + wl.endTime!.minute) -
             (wl.startTime!.hour * 60 + wl.startTime!.minute);
         if (m < 0) m += 24 * 60;
         total += m;
@@ -1092,9 +1249,11 @@ class _HomeScreenState extends State<HomeScreen> {
   String _formatReminderTime(ReminderEvent r) {
     final s = r.startDateTime;
     final e = r.endDateTime;
-    final sl = '${s.hour.toString().padLeft(2, '0')}:${s.minute.toString().padLeft(2, '0')}';
+    final sl =
+        '${s.hour.toString().padLeft(2, '0')}:${s.minute.toString().padLeft(2, '0')}';
     if (e == null) return sl;
-    final el = '${e.hour.toString().padLeft(2, '0')}:${e.minute.toString().padLeft(2, '0')}';
+    final el =
+        '${e.hour.toString().padLeft(2, '0')}:${e.minute.toString().padLeft(2, '0')}';
     return '$sl – $el';
   }
 
@@ -1114,6 +1273,16 @@ class _HomeScreenState extends State<HomeScreen> {
         return ('Lainnya', AppColors.primary, AppColors.primaryLight);
     }
   }
+
+  List<BoxShadow> _softShadow() {
+    return [
+      BoxShadow(
+        color: AppColors.primaryDark.withValues(alpha: 0.045),
+        blurRadius: 16,
+        offset: const Offset(0, 8),
+      ),
+    ];
+  }
 }
 
 // ─── REUSABLE WIDGETS ─────────────────────────────────────────────────────────
@@ -1123,7 +1292,11 @@ class _StatusChip extends StatelessWidget {
   final Color color;
   final Color bg;
 
-  const _StatusChip({required this.label, required this.color, required this.bg});
+  const _StatusChip({
+    required this.label,
+    required this.color,
+    required this.bg,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1192,7 +1365,10 @@ class _TimeSlot extends StatelessWidget {
           const SizedBox(height: 12),
           Text(
             label,
-            style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+            style: const TextStyle(
+              fontSize: 11,
+              color: AppColors.textSecondary,
+            ),
           ),
           const SizedBox(height: 4),
           Text(
@@ -1207,7 +1383,10 @@ class _TimeSlot extends StatelessWidget {
           const SizedBox(height: 3),
           Text(
             sub,
-            style: const TextStyle(fontSize: 10, color: AppColors.textSecondary),
+            style: const TextStyle(
+              fontSize: 10,
+              color: AppColors.textSecondary,
+            ),
           ),
         ],
       ),

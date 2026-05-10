@@ -125,6 +125,13 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       }
 
       await _finalize(embedding);
+    } on DuplicateFaceException {
+      if (!mounted) return;
+      setState(() {
+        _errorMsg =
+            'Wajah ini sudah terdaftar di akun lain. Gunakan wajah pemilik akun ini.';
+        _step = _EnrollStep.error;
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() {

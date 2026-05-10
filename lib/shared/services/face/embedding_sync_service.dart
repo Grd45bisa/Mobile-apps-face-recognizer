@@ -1,39 +1,42 @@
 import 'dart:convert';
+
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../supabase_client.dart';
+
 import '../../database/embedding_db.dart';
+import '../supabase_client.dart';
 import 'face_recognition_service.dart';
 
-/// Syncs face embeddings between SQLite (local cache) and Supabase (cloud backup).
+class DuplicateFaceException implements Exception {
+  const DuplicateFaceException();
+
+  @override
+  String toString() => 'Wajah ini sudah terdaftar di akun lain.';
+}
+
+/// Syncs face embeddings between SQLite and Supabase.
 ///
-/// Table schema (run in Supabase SQL editor):
-/// ```sql
-/// CREATE TABLE face_embeddings (
-///   employee_id  TEXT PRIMARY KEY REFERENCES employee_profiles(id) ON DELETE CASCADE,
-///   embedding    TEXT NOT NULL,
-///   updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
-/// );
-/// ALTER TABLE face_embeddings ENABLE ROW LEVEL SECURITY;
-/// CREATE POLICY "employee_own" ON face_embeddings
-///   USING (employee_id = auth.uid())
-///   WITH CHECK (employee_id = auth.uid());
-/// ```
-///
-/// The `embedding` column stores either a single embedding JSON array (v1)
-/// or a JSON array-of-arrays for multi-pose enrollment (v2). Decoder is
-/// shape-aware so existing v1 rows keep working.
+/// SQLite is the fast local cache. Supabase is the backup source, mainly for
+/// restoring face data when the user installs the app on a new device.
 class EmbeddingSyncService {
   static final EmbeddingSyncService instance = EmbeddingSyncService._();
   EmbeddingSyncService._();
 
   static const _table = 'face_embeddings';
+  static const double _duplicateFaceThreshold = 1.25;
+
   SupabaseClient get _client => SupabaseClientService.client;
 
-  // ── Upload (enroll) ───────────────────────────────────────────────────────
-
-  /// Save a single embedding to both SQLite and Supabase.
-  /// Kept for backward compatibility — prefer [saveEmbeddings] for multi-pose.
+  /// Save a single embedding to SQLite and Supabase.
+  ///
+  /// The Supabase duplicate check keeps one registered face from being reused
+  /// across different accounts. Re-enrollment for the same account is allowed.
   Future<void> saveEmbedding(String employeeId, List<double> embedding) async {
+    final duplicated = await isFaceRegisteredByAnotherAccount(
+      employeeId,
+      embedding,
+    );
+    if (duplicated) throw const DuplicateFaceException();
+
     await EmbeddingDb.instance.upsert(employeeId, embedding);
 
     await _client.from(_table).upsert({
@@ -43,12 +46,19 @@ class EmbeddingSyncService {
     });
   }
 
-  /// Save multiple embeddings (one per pose) for stronger matching.
-  /// Each embedding is L2-normalized before storage.
+  /// Backward-compatible save for older multi-embedding data.
   Future<void> saveEmbeddings(
     String employeeId,
     List<List<double>> embeddings,
   ) async {
+    for (final embedding in embeddings) {
+      final duplicated = await isFaceRegisteredByAnotherAccount(
+        employeeId,
+        embedding,
+      );
+      if (duplicated) throw const DuplicateFaceException();
+    }
+
     await EmbeddingDb.instance.upsertMulti(employeeId, embeddings);
 
     await _client.from(_table).upsert({
@@ -58,10 +68,7 @@ class EmbeddingSyncService {
     });
   }
 
-  // ── Download (restore on new device) ─────────────────────────────────────
-
-  /// Pull embedding(s) from Supabase and cache locally.
-  /// Returns the list of normalized embeddings (1..N) or null if not enrolled.
+  /// Pull embedding(s) from Supabase and cache them locally.
   Future<List<List<double>>?> fetchAndCacheEmbeddings(String employeeId) async {
     final row = await _client
         .from(_table)
@@ -72,32 +79,19 @@ class EmbeddingSyncService {
     if (row == null) return null;
 
     final raw = row['embedding'] as String;
-    final decoded = jsonDecode(raw) as List;
-    if (decoded.isEmpty) return null;
-
-    final List<List<double>> embeddings;
-    if (decoded.first is List) {
-      // v2: list of lists
-      embeddings = decoded
-          .map((e) => (e as List).map((n) => (n as num).toDouble()).toList())
-          .toList();
-    } else {
-      // v1: single list
-      embeddings = [decoded.map((e) => (e as num).toDouble()).toList()];
-    }
+    final embeddings = _decodeEmbeddings(raw);
+    if (embeddings.isEmpty) return null;
 
     await EmbeddingDb.instance.upsertMulti(employeeId, embeddings);
     return embeddings;
   }
 
-  /// Backward-compat single-embedding fetch — returns first embedding only.
+  /// Backward-compatible single-embedding fetch. Returns first embedding only.
   Future<List<double>?> fetchAndCacheEmbedding(String employeeId) async {
     final list = await fetchAndCacheEmbeddings(employeeId);
     if (list == null || list.isEmpty) return null;
     return list.first;
   }
-
-  // ── Check enrollment status ───────────────────────────────────────────────
 
   /// Returns true if embedding exists in Supabase.
   Future<bool> isEnrolledOnCloud(String employeeId) async {
@@ -109,10 +103,34 @@ class EmbeddingSyncService {
     return row != null;
   }
 
-  // ── Get embedding (local-first, cloud fallback) ───────────────────────────
+  /// Returns true if Supabase finds this face on another account.
+  ///
+  /// This uses the `find_duplicate_face_owner` RPC from `supabase/schema.sql`.
+  /// The client receives only the matching owner id and distance, never another
+  /// user's raw biometric embedding.
+  Future<bool> isFaceRegisteredByAnotherAccount(
+    String employeeId,
+    List<double> embedding,
+  ) async {
+    final result = await _client.rpc(
+      'find_duplicate_face_owner',
+      params: {
+        'query_embedding': jsonEncode(embedding),
+        'match_threshold': _duplicateFaceThreshold,
+      },
+    );
 
-  /// Get all embeddings for current user — checks SQLite first, then Supabase.
-  /// Returns null if not enrolled anywhere.
+    if (result is! List || result.isEmpty) return false;
+
+    for (final row in result) {
+      if (row is! Map) continue;
+      final ownerId = row['employee_id']?.toString();
+      if (ownerId != null && ownerId != employeeId) return true;
+    }
+    return false;
+  }
+
+  /// Get all embeddings for current user. Checks SQLite first, then Supabase.
   Future<List<List<double>>?> getEmbeddings(String employeeId) async {
     final local = await EmbeddingDb.instance.getMulti(employeeId);
     if (local != null && local.isNotEmpty) return local;
@@ -120,23 +138,13 @@ class EmbeddingSyncService {
     return fetchAndCacheEmbeddings(employeeId);
   }
 
-  /// Backward-compat single-embedding getter — returns first only.
+  /// Backward-compatible single-embedding getter. Returns first only.
   Future<List<double>?> getEmbedding(String employeeId) async {
     final list = await getEmbeddings(employeeId);
     if (list == null || list.isEmpty) return null;
     return list.first;
   }
 
-  // ── Adaptive update (online learning) ────────────────────────────────────
-
-  /// Perbarui embedding saat presensi berhasil dengan similarity di zona
-  /// [minSimilarity, maxSimilarity] — artinya wajah dikenali tapi ada
-  /// pergeseran (ekspresi beda, pencahayaan beda, dsb).
-  ///
-  /// Cara kerja: exponential moving average antara embedding lama dan baru.
-  /// [alpha] = bobot frame baru (0.05–0.15 cukup konservatif).
-  /// Hanya embedding dengan similarity tertinggi yang diperbarui,
-  /// sehingga pose lain (kiri/kanan/ekspresi) tidak terkontaminasi.
   Future<void> adaptEmbedding(
     String employeeId,
     List<double> newEmbedding, {
@@ -147,7 +155,6 @@ class EmbeddingSyncService {
     final stored = await getEmbeddings(employeeId);
     if (stored == null || stored.isEmpty) return;
 
-    // Cari embedding tersimpan yang paling mirip dengan frame baru.
     int bestIdx = 0;
     double bestSim = -1;
     for (int i = 0; i < stored.length; i++) {
@@ -161,11 +168,8 @@ class EmbeddingSyncService {
       }
     }
 
-    // Hanya update kalau similarity sudah cukup kuat (80–93%) agar
-    // data wajah tidak rusak oleh percobaan yang gagal atau tidak stabil.
     if (bestSim < minSimilarity || bestSim > maxSimilarity) return;
 
-    // EMA: blended = normalize((1-alpha)*old + alpha*new)
     final old = stored[bestIdx];
     final blended = List<double>.generate(
       old.length,
@@ -176,7 +180,6 @@ class EmbeddingSyncService {
     final updated = List<List<double>>.from(stored);
     updated[bestIdx] = normalized;
 
-    // Simpan ke SQLite lokal dulu (cepat), Supabase background.
     await EmbeddingDb.instance.upsertMulti(employeeId, updated);
     _client
         .from(_table)
@@ -189,10 +192,19 @@ class EmbeddingSyncService {
         .catchError((_) {});
   }
 
-  // ── Delete (re-enrollment) ────────────────────────────────────────────────
-
   Future<void> deleteEmbedding(String employeeId) async {
     await EmbeddingDb.instance.delete(employeeId);
     await _client.from(_table).delete().eq('employee_id', employeeId);
+  }
+
+  static List<List<double>> _decodeEmbeddings(String raw) {
+    final decoded = jsonDecode(raw) as List;
+    if (decoded.isEmpty) return [];
+    if (decoded.first is List) {
+      return decoded
+          .map((e) => (e as List).map((n) => (n as num).toDouble()).toList())
+          .toList();
+    }
+    return [decoded.map((e) => (e as num).toDouble()).toList()];
   }
 }

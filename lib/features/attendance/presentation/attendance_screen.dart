@@ -498,17 +498,37 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           if (!_isEnrolled) return _buildEnrollPrompt();
           return SafeArea(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-              child: Column(
-                children: [
-                  _buildStatusSummary(),
-                  const SizedBox(height: 14),
-                  Expanded(child: _buildCameraArea()),
-                  const SizedBox(height: 10),
-                  if (!_isCheckedOut && !kIsWeb) _buildFaceDetectionStatus(),
-                  const SizedBox(height: 14),
-                  _buildActionButton(),
-                ],
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  const reservedContentHeight = 232.0;
+                  final maxCameraHeight =
+                      constraints.maxHeight - reservedContentHeight;
+                  final desiredCameraHeight = constraints.maxWidth * 1.24;
+                  final rawCameraHeight = desiredCameraHeight < maxCameraHeight
+                      ? desiredCameraHeight
+                      : maxCameraHeight;
+                  final targetCameraHeight = rawCameraHeight.clamp(
+                    240.0,
+                    452.0,
+                  );
+
+                  return Column(
+                    children: [
+                      SizedBox(
+                        height: targetCameraHeight,
+                        child: _buildCameraArea(),
+                      ),
+                      const SizedBox(height: 12),
+                      _buildStatusSummary(),
+                      const SizedBox(height: 10),
+                      if (!_isCheckedOut && !kIsWeb)
+                        _buildFaceDetectionStatus(),
+                      const SizedBox(height: 14),
+                      _buildActionButton(),
+                    ],
+                  );
+                },
               ),
             ),
           );
@@ -524,11 +544,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
       decoration: BoxDecoration(
         color: bg,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: color.withValues(alpha: 0.2)),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
       ),
       child: Row(
         children: [
@@ -597,24 +617,35 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   Widget _buildEnrollPrompt() {
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
+      child: Container(
+        margin: const EdgeInsets.all(20),
+        padding: const EdgeInsets.fromLTRB(22, 24, 22, 22),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: AppColors.border),
+          boxShadow: _softShadow(),
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              padding: const EdgeInsets.all(20),
-              decoration: const BoxDecoration(
+              width: 76,
+              height: 76,
+              decoration: BoxDecoration(
                 color: AppColors.warningLight,
                 shape: BoxShape.circle,
+                border: Border.all(
+                  color: AppColors.warning.withValues(alpha: 0.12),
+                ),
               ),
               child: const Icon(
                 Icons.face_retouching_off_rounded,
-                size: 52,
+                size: 38,
                 color: AppColors.warning,
               ),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 18),
             const Text(
               'Wajah Belum Terdaftar',
               style: TextStyle(
@@ -625,14 +656,18 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Untuk menggunakan fitur absensi wajah, kamu perlu mendaftarkan wajah terlebih dahulu.',
-              style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+              'Daftarkan wajah satu kali agar presensi bisa cocok dengan akun ini.',
+              style: TextStyle(
+                fontSize: 13,
+                height: 1.45,
+                color: AppColors.textSecondary,
+              ),
               textAlign: TextAlign.center,
             ),
-            const SizedBox(height: 32),
+            const SizedBox(height: 22),
             SizedBox(
               width: double.infinity,
-              height: 50,
+              height: 54,
               child: ElevatedButton.icon(
                 onPressed: _goToEnrollment,
                 icon: const Icon(
@@ -648,7 +683,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                   foregroundColor: Colors.white,
                   elevation: 0,
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(16),
                   ),
                 ),
               ),
@@ -669,25 +704,44 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       automaticallyImplyLeading: false,
       titleSpacing: 16,
       toolbarHeight: 64,
-      title: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      title: Row(
         children: [
-          const Text(
-            'Absensi',
-            style: TextStyle(
-              color: AppColors.textPrimary,
-              fontWeight: FontWeight.bold,
-              fontSize: 18,
-              letterSpacing: -0.2,
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: AppColors.primaryLight,
+              borderRadius: BorderRadius.circular(13),
+            ),
+            child: const Icon(
+              Icons.face_retouching_natural_rounded,
+              color: AppColors.primary,
+              size: 22,
             ),
           ),
-          const SizedBox(height: 2),
-          Text(
-            _todayLabel(),
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              fontSize: 11,
-              fontWeight: FontWeight.w500,
+          const SizedBox(width: 11),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Absensi',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 18,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _todayLabel(),
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -749,16 +803,17 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     final cout = record?.checkOut;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: AppColors.border),
+        boxShadow: _softShadow(),
       ),
       child: Row(
         children: [
           Expanded(child: _timeSlot('Check-in', cin, AppColors.success)),
-          Container(width: 1, height: 36, color: AppColors.border),
+          const SizedBox(width: 10),
           Expanded(child: _timeSlot('Check-out', cout, AppColors.error)),
         ],
       ),
@@ -769,18 +824,39 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     final hasTime = time != null;
     return Column(
       children: [
-        Text(
-          label,
-          style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          hasTime ? _fmtTod(time) : '--:--',
-          style: TextStyle(
-            fontSize: 22,
-            fontWeight: FontWeight.w800,
-            color: hasTime ? activeColor : AppColors.textSecondary,
-            letterSpacing: -0.5,
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          decoration: BoxDecoration(
+            color: hasTime
+                ? activeColor.withValues(alpha: 0.08)
+                : AppColors.background,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: hasTime
+                  ? activeColor.withValues(alpha: 0.14)
+                  : AppColors.border,
+            ),
+          ),
+          child: Column(
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                hasTime ? _fmtTod(time) : '--:--',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  color: hasTime ? activeColor : AppColors.textSecondary,
+                ),
+              ),
+            ],
           ),
         ),
       ],
@@ -790,41 +866,50 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   // ── Camera area ───────────────────────────────────────────────────────────
 
   Widget _buildCameraArea() {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: _isCheckedOut
-          ? _buildCompletedAttendanceView()
-          : CameraFaceView(
-              key: _cameraKey,
-              active: widget.isActive,
-              hint: 'Arahkan wajah ke kamera',
-              liveMode: false,
-              onTimeout: () {
-                if (!mounted) return;
-                _sampleAttempts++;
-                if (_sampleAttempts > 0 &&
-                    _sampleAttempts < _maxVerificationSamples) {
-                  unawaited(_scanNextFaceSample());
-                  return;
-                }
-                _showFaceMatchFailed(
-                  'Wajah tidak terdeteksi. Silakan konfirmasi ulang.',
-                );
-              },
-              onFaceDetected:
-                  ({
-                    required fullImage,
-                    required inputImage,
-                    required nv21Bytes,
-                    required rawWidth,
-                    required rawHeight,
-                    required rotation,
-                    required face,
-                  }) => _onFaceDetectedForAttendance(
-                    fullImage: fullImage,
-                    face: face,
-                  ),
-            ),
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppColors.border),
+        boxShadow: _softShadow(),
+      ),
+      padding: const EdgeInsets.all(6),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(18),
+        child: _isCheckedOut
+            ? _buildCompletedAttendanceView()
+            : CameraFaceView(
+                key: _cameraKey,
+                active: widget.isActive,
+                hint: 'Arahkan wajah ke kamera',
+                liveMode: false,
+                onTimeout: () {
+                  if (!mounted) return;
+                  _sampleAttempts++;
+                  if (_sampleAttempts > 0 &&
+                      _sampleAttempts < _maxVerificationSamples) {
+                    unawaited(_scanNextFaceSample());
+                    return;
+                  }
+                  _showFaceMatchFailed(
+                    'Wajah tidak terdeteksi. Silakan konfirmasi ulang.',
+                  );
+                },
+                onFaceDetected:
+                    ({
+                      required fullImage,
+                      required inputImage,
+                      required nv21Bytes,
+                      required rawWidth,
+                      required rawHeight,
+                      required rotation,
+                      required face,
+                    }) => _onFaceDetectedForAttendance(
+                      fullImage: fullImage,
+                      face: face,
+                    ),
+              ),
+      ),
     );
   }
 
@@ -834,7 +919,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     return Container(
       decoration: BoxDecoration(
         color: AppColors.successLight,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(18),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
       child: Center(
@@ -936,7 +1021,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     if (_isCheckedOut) {
       return SizedBox(
         width: double.infinity,
-        height: 54,
+        height: 56,
         child: ElevatedButton.icon(
           onPressed: null,
           icon: const Icon(Icons.check_circle_rounded, size: 20),
@@ -951,7 +1036,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             disabledForegroundColor: AppColors.success,
             elevation: 0,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(16),
             ),
           ),
         ),
@@ -961,7 +1046,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     if (kIsWeb) {
       return SizedBox(
         width: double.infinity,
-        height: 54,
+        height: 56,
         child: ElevatedButton.icon(
           onPressed: _processing ? null : _handleButtonTap,
           icon: Icon(
@@ -979,7 +1064,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             foregroundColor: Colors.white,
             elevation: 0,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(16),
             ),
           ),
         ),
@@ -997,7 +1082,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
       width: double.infinity,
-      height: 54,
+      height: 56,
       child: ElevatedButton.icon(
         onPressed: busy ? null : _handleButtonTap,
         icon: Icon(
@@ -1017,7 +1102,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           disabledForegroundColor: AppColors.textSecondary,
           elevation: 0,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(16),
           ),
         ),
       ),
@@ -1028,6 +1113,14 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   String _fmtTod(TimeOfDay t) =>
       '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+
+  List<BoxShadow> _softShadow() => [
+    BoxShadow(
+      color: AppColors.primaryDark.withValues(alpha: 0.045),
+      blurRadius: 16,
+      offset: const Offset(0, 8),
+    ),
+  ];
 
   String _todayLabel() {
     final now = DateTime.now();

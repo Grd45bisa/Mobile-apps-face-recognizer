@@ -224,7 +224,8 @@ class WorklogEntry {
     if (start == null || end == null) return '-';
     final startMin = start.hour * 60 + start.minute;
     final endMin = end.hour * 60 + end.minute;
-    final diff = endMin - startMin;
+    var diff = endMin - startMin;
+    if (diff < 0) diff += 24 * 60;
     if (diff <= 0) return '-';
     final h = diff ~/ 60;
     final m = diff % 60;
@@ -413,8 +414,7 @@ class EmployeeProfile {
         department: json['department'] as String?,
         position: json['position'] as String?,
         phoneNumber: json['phone_number'] as String?,
-        notificationsEnabled:
-            (json['notifications_enabled'] as bool?) ?? true,
+        notificationsEnabled: (json['notifications_enabled'] as bool?) ?? true,
       );
 
   Map<String, dynamic> toJson() => {

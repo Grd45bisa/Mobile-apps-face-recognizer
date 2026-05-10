@@ -1259,7 +1259,8 @@ class _ReportScreenState extends State<ReportScreen> {
 
     await Printing.layoutPdf(
       onLayout: (_) async => doc.save(),
-      name: 'FaceWork_${profile?.fullName ?? 'Laporan'}_${_dateShort(_rangeStart)}-${_dateShort(_rangeEnd)}.pdf',
+      name:
+          'Presensia_${profile?.fullName ?? 'Laporan'}_${_dateShort(_rangeStart)}-${_dateShort(_rangeEnd)}.pdf',
     );
   }
 }

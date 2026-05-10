@@ -15,17 +15,17 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SupabaseClientService.initialize();
   await NotificationService.instance.init();
-  runApp(const FaceWorkApp());
+  runApp(const PresensiaApp());
 }
 
-class FaceWorkApp extends StatefulWidget {
-  const FaceWorkApp({super.key});
+class PresensiaApp extends StatefulWidget {
+  const PresensiaApp({super.key});
 
   @override
-  State<FaceWorkApp> createState() => _FaceWorkAppState();
+  State<PresensiaApp> createState() => _PresensiaAppState();
 }
 
-class _FaceWorkAppState extends State<FaceWorkApp> {
+class _PresensiaAppState extends State<PresensiaApp> {
   final _navigatorKey = GlobalKey<NavigatorState>();
 
   // Event signedIn pertama saat app buka = restore session → SplashScreen yang handle.
@@ -94,7 +94,7 @@ class _FaceWorkAppState extends State<FaceWorkApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'FaceWork Tracker',
+      title: 'Presensia',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
       navigatorKey: _navigatorKey,

@@ -20,9 +20,9 @@ class _MainScreenState extends State<MainScreen>
   late AnimationController _fabController;
   late Animation<double> _fabScale;
 
-  static const double _barHeight = 68;
+  static const double _barHeight = 70;
   static const double _fabSize = 64;
-  static const double _notchRadius = 42;
+  static const double _notchRadius = 40;
 
   @override
   void initState() {
@@ -88,7 +88,18 @@ class _MainScreenState extends State<MainScreen>
               left: 0,
               right: 0,
               bottom: 0,
-              child: _buildCurvedBar(bottomInset),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.06),
+                      blurRadius: 12,
+                      offset: const Offset(0, -3),
+                    ),
+                  ],
+                ),
+                child: _buildCurvedBar(bottomInset),
+              ),
             ),
             // Center FAB sits above the notch
             Positioned(
@@ -190,19 +201,13 @@ class _MainScreenState extends State<MainScreen>
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: selected ? AppColors.primaryDark : AppColors.primary,
-              boxShadow: [
-                BoxShadow(
-                  color: AppColors.primary.withValues(alpha: 0.32),
-                  blurRadius: 14,
-                  offset: const Offset(0, 4),
-                ),
-              ],
+              border: Border.all(color: Colors.white, width: 3),
             ),
             child: Icon(
               selected
                   ? Icons.face_retouching_natural_rounded
                   : Icons.face_rounded,
-              size: 30,
+              size: 31,
               color: Colors.white,
             ),
           ),
@@ -231,31 +236,33 @@ class _MainScreenState extends State<MainScreen>
           AnimatedContainer(
             duration: const Duration(milliseconds: 220),
             curve: Curves.easeOutCubic,
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+            width: 48,
+            height: 32,
             decoration: BoxDecoration(
               color: selected ? AppColors.primaryLight : Colors.transparent,
-              borderRadius: BorderRadius.circular(20),
+              borderRadius: BorderRadius.circular(16),
             ),
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 180),
-              transitionBuilder: (child, anim) =>
-                  ScaleTransition(scale: anim, child: child),
-              child: Icon(
-                selected ? icon : iconOutlined,
-                key: ValueKey('${index}_$selected'),
-                size: 22,
-                color: selected ? AppColors.primary : AppColors.textSecondary,
+            child: Center(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                transitionBuilder: (child, anim) =>
+                    ScaleTransition(scale: anim, child: child),
+                child: Icon(
+                  selected ? icon : iconOutlined,
+                  key: ValueKey('${index}_$selected'),
+                  size: selected ? 23 : 22,
+                  color: selected ? AppColors.primary : AppColors.textSecondary,
+                ),
               ),
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 3),
           AnimatedDefaultTextStyle(
             duration: const Duration(milliseconds: 200),
             style: TextStyle(
-              fontSize: 10,
-              fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
+              fontSize: 10.5,
+              fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
               color: selected ? AppColors.primary : AppColors.textSecondary,
-              letterSpacing: 0.2,
             ),
             child: Text(label),
           ),
@@ -283,10 +290,10 @@ class _CurvedBarPainter extends CustomPainter {
     final centerX = size.width / 2;
 
     // Elegant wide curve — wider than the notch to look smooth
-    final notchWidth = notchRadius * 2 + 20;
+    final notchWidth = notchRadius * 2 + 42;
     final leftNotch = centerX - notchWidth / 2;
     final rightNotch = centerX + notchWidth / 2;
-    final dipDepth = notchRadius * 0.95;
+    final dipDepth = notchRadius * 1.16;
 
     final path = Path();
     path.moveTo(0, 0);
@@ -294,18 +301,18 @@ class _CurvedBarPainter extends CustomPainter {
 
     // Entry curve down into the notch
     path.cubicTo(
-      leftNotch + notchWidth * 0.22,
+      leftNotch + notchWidth * 0.20,
       0,
-      centerX - notchWidth * 0.42,
+      centerX - notchWidth * 0.36,
       dipDepth,
       centerX,
       dipDepth,
     );
     // Exit curve up from the notch
     path.cubicTo(
-      centerX + notchWidth * 0.42,
+      centerX + notchWidth * 0.36,
       dipDepth,
-      rightNotch - notchWidth * 0.22,
+      rightNotch - notchWidth * 0.20,
       0,
       rightNotch,
       0,
@@ -327,17 +334,17 @@ class _CurvedBarPainter extends CustomPainter {
     borderPath.moveTo(0, 0);
     borderPath.lineTo(leftNotch, 0);
     borderPath.cubicTo(
-      leftNotch + notchWidth * 0.22,
+      leftNotch + notchWidth * 0.20,
       0,
-      centerX - notchWidth * 0.42,
+      centerX - notchWidth * 0.36,
       dipDepth,
       centerX,
       dipDepth,
     );
     borderPath.cubicTo(
-      centerX + notchWidth * 0.42,
+      centerX + notchWidth * 0.36,
       dipDepth,
-      rightNotch - notchWidth * 0.22,
+      rightNotch - notchWidth * 0.20,
       0,
       rightNotch,
       0,

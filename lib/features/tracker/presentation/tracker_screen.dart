@@ -531,52 +531,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AppBar(
-        backgroundColor: AppColors.surface,
-        elevation: 0,
-        surfaceTintColor: Colors.transparent,
-        automaticallyImplyLeading: false,
-        title: Row(
-          children: [
-            const Text(
-              'Tracker',
-              style: TextStyle(
-                color: AppColors.textPrimary,
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-              ),
-            ),
-            if (_isRunning) ...[
-              const SizedBox(width: 10),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 5,
-                ),
-                decoration: BoxDecoration(
-                  color: AppColors.successLight,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.circle, size: 8, color: AppColors.success),
-                    SizedBox(width: 6),
-                    Text(
-                      'Sedang aktif',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.success,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
+      appBar: _buildAppBar(),
       body: Stack(
         children: [
           _isLoading
@@ -591,6 +546,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
               : Column(
                   children: [
                     _buildTimerPanel(),
+                    _buildTodaySummary(),
                     Expanded(
                       child: _worklogs.isEmpty
                           ? _buildEmptyState(contentBottomPadding)
@@ -620,6 +576,106 @@ class _TrackerScreenState extends State<TrackerScreen> {
             right: 16,
             bottom: fabBottomPadding,
             child: _buildAddButton(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  PreferredSizeWidget _buildAppBar() {
+    return AppBar(
+      backgroundColor: AppColors.surface,
+      elevation: 0,
+      surfaceTintColor: Colors.transparent,
+      automaticallyImplyLeading: false,
+      titleSpacing: 16,
+      toolbarHeight: 64,
+      title: Row(
+        children: [
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: AppColors.primaryLight,
+              borderRadius: BorderRadius.circular(13),
+            ),
+            child: const Icon(
+              Icons.timer_rounded,
+              color: AppColors.primary,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 11),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Tracker',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 18,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _isRunning
+                      ? 'Timer sedang berjalan'
+                      : 'Catat aktivitas kerja',
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(0, 0, 16, 0),
+          child: Align(
+            alignment: Alignment.center,
+            child: _buildRunningBadge(),
+          ),
+        ),
+      ],
+      bottom: const PreferredSize(
+        preferredSize: Size.fromHeight(1),
+        child: Divider(height: 1, color: AppColors.border),
+      ),
+    );
+  }
+
+  Widget _buildRunningBadge() {
+    final color = _isRunning ? AppColors.success : AppColors.textSecondary;
+    final bg = _isRunning ? AppColors.successLight : AppColors.background;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: _isRunning
+              ? AppColors.success.withValues(alpha: 0.12)
+              : AppColors.border,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.circle, size: 7, color: color),
+          const SizedBox(width: 5),
+          Text(
+            _isRunning ? 'Aktif' : 'Siap',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
           ),
         ],
       ),
@@ -712,19 +768,36 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
     return Container(
       color: AppColors.background,
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
       child: Container(
         decoration: BoxDecoration(
           color: AppColors.surface,
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(22),
           border: Border.all(color: AppColors.border),
+          boxShadow: _softShadow(),
         ),
         child: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
               child: Row(
                 children: [
+                  Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: accentColor.withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(13),
+                    ),
+                    child: Icon(
+                      _isRunning
+                          ? Icons.play_circle_fill_rounded
+                          : Icons.edit_note_rounded,
+                      color: accentColor,
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: TextField(
                       controller: _taskController,
@@ -794,7 +867,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
             ),
             const Divider(height: 1, color: AppColors.border),
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
               child: Row(
                 children: [
                   Expanded(
@@ -809,8 +882,8 @@ class _TrackerScreenState extends State<TrackerScreen> {
                               Text(
                                 _formatDurationClock(_elapsed),
                                 style: TextStyle(
-                                  fontSize: 22,
-                                  fontWeight: FontWeight.bold,
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.w900,
                                   color: _isRunning
                                       ? AppColors.primary
                                       : AppColors.textSecondary,
@@ -861,7 +934,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
                         elevation: 0,
                         padding: const EdgeInsets.symmetric(horizontal: 18),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
+                          borderRadius: BorderRadius.circular(14),
                         ),
                       ),
                       child: Row(
@@ -891,6 +964,101 @@ class _TrackerScreenState extends State<TrackerScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildTodaySummary() {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final todayEntries = _worklogs.where((entry) {
+      final date = DateTime(entry.date.year, entry.date.month, entry.date.day);
+      return date == today;
+    }).toList();
+    final total = todayEntries.fold<Duration>(
+      Duration.zero,
+      (sum, entry) => sum + _entryDuration(entry),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Row(
+        children: [
+          Expanded(
+            child: _summaryMetric(
+              icon: Icons.task_alt_rounded,
+              label: 'Aktivitas',
+              value: '${todayEntries.length}',
+              color: AppColors.primary,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: _summaryMetric(
+              icon: Icons.schedule_rounded,
+              label: 'Total hari ini',
+              value: _formatDuration(total),
+              color: AppColors.success,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _summaryMetric({
+    required IconData icon,
+    required String label,
+    required String value,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, size: 18, color: color),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: color,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -957,28 +1125,22 @@ class _TrackerScreenState extends State<TrackerScreen> {
   Widget _buildEntryCard(WorklogEntry entry) {
     final timeLabel =
         '${_formatTimeOfDay(entry.startTime)} - ${_formatTimeOfDay(entry.endTime)}';
+    final duration = _entryDuration(entry);
+    final durationLabel = duration > Duration.zero
+        ? _formatDuration(duration)
+        : entry.duration;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.fromLTRB(14, 14, 8, 14),
+      padding: const EdgeInsets.fromLTRB(16, 14, 8, 14),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: AppColors.border),
       ),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Container(
-            width: 12,
-            height: 12,
-            margin: const EdgeInsets.only(top: 4),
-            decoration: BoxDecoration(
-              color: entry.projectColor,
-              shape: BoxShape.circle,
-            ),
-          ),
-          const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -987,7 +1149,8 @@ class _TrackerScreenState extends State<TrackerScreen> {
                   entry.taskName,
                   style: const TextStyle(
                     fontSize: 14,
-                    fontWeight: FontWeight.w700,
+                    height: 1.25,
+                    fontWeight: FontWeight.w800,
                     color: AppColors.textPrimary,
                   ),
                   maxLines: 2,
@@ -996,6 +1159,15 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 const SizedBox(height: 6),
                 Row(
                   children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: entry.projectColor,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 7),
                     Flexible(
                       child: Text(
                         entry.projectName,
@@ -1036,16 +1208,18 @@ class _TrackerScreenState extends State<TrackerScreen> {
                   vertical: 7,
                 ),
                 decoration: BoxDecoration(
-                  color: AppColors.background,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: AppColors.border),
+                  color: AppColors.primaryLight,
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(
+                    color: AppColors.primary.withValues(alpha: 0.10),
+                  ),
                 ),
                 child: Text(
-                  entry.duration,
+                  durationLabel,
                   style: const TextStyle(
                     fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.primary,
                   ),
                 ),
               ),
@@ -1053,11 +1227,14 @@ class _TrackerScreenState extends State<TrackerScreen> {
           ),
           PopupMenuButton<String>(
             icon: const Icon(
-              Icons.more_vert_rounded,
-              size: 18,
+              Icons.more_horiz_rounded,
+              size: 20,
               color: AppColors.textSecondary,
             ),
             padding: EdgeInsets.zero,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.all(Radius.circular(12)),
+            ),
             onSelected: (value) {
               if (value == 'continue') _continueEntry(entry);
               if (value == 'edit') _showManualEntrySheet(editing: entry);
@@ -2194,6 +2371,14 @@ class _TrackerScreenState extends State<TrackerScreen> {
     ),
     contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
   );
+
+  List<BoxShadow> _softShadow() => [
+    BoxShadow(
+      color: AppColors.primaryDark.withValues(alpha: 0.045),
+      blurRadius: 16,
+      offset: const Offset(0, 8),
+    ),
+  ];
 
   Map<DateTime, List<WorklogEntry>> _groupByDate(List<WorklogEntry> entries) {
     final grouped = <DateTime, List<WorklogEntry>>{};

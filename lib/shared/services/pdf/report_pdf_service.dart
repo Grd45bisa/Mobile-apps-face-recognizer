@@ -67,7 +67,11 @@ class ReportBucket {
   final DateTime start;
   final DateTime end;
   final double hours;
-  const ReportBucket({required this.start, required this.end, required this.hours});
+  const ReportBucket({
+    required this.start,
+    required this.end,
+    required this.hours,
+  });
 }
 
 class ReportPdfService {
@@ -83,8 +87,8 @@ class ReportPdfService {
   /// Generate PDF document dari data laporan.
   static pw.Document generate(ReportPdfData data) {
     final doc = pw.Document(
-      title: 'Laporan FaceWork — ${data.employeeName}',
-      author: 'FaceWork Tracker',
+      title: 'Laporan Presensia - ${data.employeeName}',
+      author: 'Presensia',
     );
 
     doc.addPage(
@@ -124,7 +128,7 @@ class ReportPdfService {
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
                 pw.Text(
-                  'FaceWork Tracker',
+                  'Presensia',
                   style: pw.TextStyle(
                     fontSize: 18,
                     fontWeight: pw.FontWeight.bold,
@@ -134,15 +138,15 @@ class ReportPdfService {
                 pw.SizedBox(height: 2),
                 pw.Text(
                   'Laporan Performa Karyawan',
-                  style: pw.TextStyle(
-                    fontSize: 11,
-                    color: _textSecondary,
-                  ),
+                  style: pw.TextStyle(fontSize: 11, color: _textSecondary),
                 ),
               ],
             ),
             pw.Container(
-              padding: const pw.EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              padding: const pw.EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 6,
+              ),
               decoration: pw.BoxDecoration(
                 color: _primaryColor,
                 borderRadius: pw.BorderRadius.circular(8),
@@ -175,7 +179,7 @@ class ReportPdfService {
           mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
           children: [
             pw.Text(
-              'Digenerate oleh FaceWork Tracker • ${_dateShort(DateTime.now())}',
+              'Digenerate oleh Presensia - ${_dateShort(DateTime.now())}',
               style: pw.TextStyle(fontSize: 8, color: _textSecondary),
             ),
             pw.Text(
@@ -241,9 +245,10 @@ class ReportPdfService {
                 pw.SizedBox(height: 2),
               if (data.department != null || data.position != null)
                 pw.Text(
-                  [data.position, data.department]
-                      .where((e) => e != null)
-                      .join(' • '),
+                  [
+                    data.position,
+                    data.department,
+                  ].where((e) => e != null).join(' • '),
                   style: pw.TextStyle(fontSize: 10, color: _textSecondary),
                 ),
             ],
@@ -263,51 +268,65 @@ class ReportPdfService {
         pw.SizedBox(height: 8),
         pw.Row(
           children: [
-            pw.Expanded(child: _statCard(
-              label: 'Hari Hadir',
-              value: '${data.presentDays}',
-              sub: 'dari ${data.workdayTarget} hari kerja',
-              color: _successColor,
-            )),
+            pw.Expanded(
+              child: _statCard(
+                label: 'Hari Hadir',
+                value: '${data.presentDays}',
+                sub: 'dari ${data.workdayTarget} hari kerja',
+                color: _successColor,
+              ),
+            ),
             pw.SizedBox(width: 8),
-            pw.Expanded(child: _statCard(
-              label: 'Total Jam Kerja',
-              value: data.totalWorkLabel,
-              sub: 'dari tracker',
-              color: _primaryColor,
-            )),
+            pw.Expanded(
+              child: _statCard(
+                label: 'Total Jam Kerja',
+                value: data.totalWorkLabel,
+                sub: 'dari tracker',
+                color: _primaryColor,
+              ),
+            ),
             pw.SizedBox(width: 8),
-            pw.Expanded(child: _statCard(
-              label: 'Ketepatan Waktu',
-              value: '${data.punctualityPct.toStringAsFixed(0)}%',
-              sub: '${data.onTimeCount} dari ${data.daysWithCheckIn} hari',
-              color: data.punctualityPct >= 80 ? _successColor : _warningColor,
-            )),
+            pw.Expanded(
+              child: _statCard(
+                label: 'Ketepatan Waktu',
+                value: '${data.punctualityPct.toStringAsFixed(0)}%',
+                sub: '${data.onTimeCount} dari ${data.daysWithCheckIn} hari',
+                color: data.punctualityPct >= 80
+                    ? _successColor
+                    : _warningColor,
+              ),
+            ),
           ],
         ),
         pw.SizedBox(height: 8),
         pw.Row(
           children: [
-            pw.Expanded(child: _statCard(
-              label: 'Tidak Hadir',
-              value: '${data.missingDays}',
-              sub: 'hari tanpa absensi',
-              color: _errorColor,
-            )),
+            pw.Expanded(
+              child: _statCard(
+                label: 'Tidak Hadir',
+                value: '${data.missingDays}',
+                sub: 'hari tanpa absensi',
+                color: _errorColor,
+              ),
+            ),
             pw.SizedBox(width: 8),
-            pw.Expanded(child: _statCard(
-              label: 'Rata-rata Harian',
-              value: data.avgWorkLabel,
-              sub: 'per hari hadir',
-              color: _primaryColor,
-            )),
+            pw.Expanded(
+              child: _statCard(
+                label: 'Rata-rata Harian',
+                value: data.avgWorkLabel,
+                sub: 'per hari hadir',
+                color: _primaryColor,
+              ),
+            ),
             pw.SizedBox(width: 8),
-            pw.Expanded(child: _statCard(
-              label: 'Total Entry',
-              value: '${data.totalEntries}',
-              sub: 'catatan pekerjaan',
-              color: _textSecondary,
-            )),
+            pw.Expanded(
+              child: _statCard(
+                label: 'Total Entry',
+                value: '${data.totalEntries}',
+                sub: 'catatan pekerjaan',
+                color: _textSecondary,
+              ),
+            ),
           ],
         ),
       ],
@@ -330,7 +349,10 @@ class ReportPdfService {
       child: pw.Column(
         crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: [
-          pw.Text(label, style: pw.TextStyle(fontSize: 9, color: _textSecondary)),
+          pw.Text(
+            label,
+            style: pw.TextStyle(fontSize: 9, color: _textSecondary),
+          ),
           pw.SizedBox(height: 6),
           pw.Text(
             value,
@@ -350,7 +372,10 @@ class ReportPdfService {
   // ── Distribution section ──────────────────────────────────────────────────
 
   static pw.Widget _buildDistributionSection(ReportPdfData data) {
-    final total = (data.presentDays + data.missingDays + data.offDays).clamp(1, 9999);
+    final total = (data.presentDays + data.missingDays + data.offDays).clamp(
+      1,
+      9999,
+    );
     return pw.Column(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
       children: [
@@ -377,7 +402,12 @@ class ReportPdfService {
     );
   }
 
-  static pw.Widget _distRow(String label, int count, int total, PdfColor color) {
+  static pw.Widget _distRow(
+    String label,
+    int count,
+    int total,
+    PdfColor color,
+  ) {
     final ratio = (count / total).clamp(0.0, 1.0);
     // Total bar width available after label (80) and caption (~80) = ~360pt on A4
     const barWidth = 200.0;
@@ -388,7 +418,10 @@ class ReportPdfService {
       children: [
         pw.SizedBox(
           width: 80,
-          child: pw.Text(label, style: pw.TextStyle(fontSize: 10, color: _textPrimary)),
+          child: pw.Text(
+            label,
+            style: pw.TextStyle(fontSize: 10, color: _textPrimary),
+          ),
         ),
         pw.SizedBox(width: 8),
         // filled portion
@@ -451,7 +484,9 @@ class ReportPdfService {
                   crossAxisAlignment: pw.CrossAxisAlignment.end,
                   mainAxisAlignment: pw.MainAxisAlignment.spaceEvenly,
                   children: data.buckets.map((bucket) {
-                    final heightRatio = chartMax == 0 ? 0.0 : (bucket.hours / chartMax).clamp(0.0, 1.0);
+                    final heightRatio = chartMax == 0
+                        ? 0.0
+                        : (bucket.hours / chartMax).clamp(0.0, 1.0);
                     final isPeak = bucket.hours == maxHours && maxHours > 0;
                     return pw.Expanded(
                       child: pw.Padding(
@@ -464,15 +499,21 @@ class ReportPdfService {
                                 '${bucket.hours.toStringAsFixed(1)}j',
                                 style: pw.TextStyle(
                                   fontSize: 7,
-                                  color: isPeak ? _primaryColor : _textSecondary,
-                                  fontWeight: isPeak ? pw.FontWeight.bold : null,
+                                  color: isPeak
+                                      ? _primaryColor
+                                      : _textSecondary,
+                                  fontWeight: isPeak
+                                      ? pw.FontWeight.bold
+                                      : null,
                                 ),
                               ),
                             pw.SizedBox(height: 2),
                             pw.Container(
                               height: 80 * heightRatio,
                               decoration: pw.BoxDecoration(
-                                color: isPeak ? _primaryColor : const PdfColor.fromInt(0xFF90CAF9),
+                                color: isPeak
+                                    ? _primaryColor
+                                    : const PdfColor.fromInt(0xFF90CAF9),
                                 borderRadius: const pw.BorderRadius.only(
                                   topLeft: pw.Radius.circular(3),
                                   topRight: pw.Radius.circular(3),
@@ -519,25 +560,39 @@ class ReportPdfService {
         : data.presentDays / data.workdayTarget * 100;
 
     if (attendancePct >= 90) {
-      insights.add('Kehadiran sangat baik: ${attendancePct.toStringAsFixed(0)}% dari target hari kerja.');
+      insights.add(
+        'Kehadiran sangat baik: ${attendancePct.toStringAsFixed(0)}% dari target hari kerja.',
+      );
     } else if (attendancePct >= 70) {
-      insights.add('Kehadiran cukup baik: ${attendancePct.toStringAsFixed(0)}% dari target. Masih ada ruang untuk peningkatan.');
+      insights.add(
+        'Kehadiran cukup baik: ${attendancePct.toStringAsFixed(0)}% dari target. Masih ada ruang untuk peningkatan.',
+      );
     } else if (data.workdayTarget > 0) {
-      insights.add('Kehadiran perlu ditingkatkan: ${attendancePct.toStringAsFixed(0)}% dari target hari kerja.');
+      insights.add(
+        'Kehadiran perlu ditingkatkan: ${attendancePct.toStringAsFixed(0)}% dari target hari kerja.',
+      );
     }
 
     if (data.punctualityPct >= 90) {
-      insights.add('Ketepatan waktu sangat baik: ${data.punctualityPct.toStringAsFixed(0)}% check-in sebelum 08:15.');
+      insights.add(
+        'Ketepatan waktu sangat baik: ${data.punctualityPct.toStringAsFixed(0)}% check-in sebelum 08:15.',
+      );
     } else if (data.punctualityPct > 0) {
-      insights.add('Ketepatan waktu: ${data.punctualityPct.toStringAsFixed(0)}% (${data.onTimeCount} dari ${data.daysWithCheckIn} hari check-in tepat waktu).');
+      insights.add(
+        'Ketepatan waktu: ${data.punctualityPct.toStringAsFixed(0)}% (${data.onTimeCount} dari ${data.daysWithCheckIn} hari check-in tepat waktu).',
+      );
     }
 
     if (data.totalEntries > 0) {
-      insights.add('Total ${data.totalEntries} entri pekerjaan tercatat dengan total ${data.totalWorkLabel} jam kerja.');
+      insights.add(
+        'Total ${data.totalEntries} entri pekerjaan tercatat dengan total ${data.totalWorkLabel} jam kerja.',
+      );
     }
 
     if (insights.isEmpty) {
-      insights.add('Belum ada data yang cukup untuk menghasilkan insight pada periode ini.');
+      insights.add(
+        'Belum ada data yang cukup untuk menghasilkan insight pada periode ini.',
+      );
     }
 
     return pw.Column(
@@ -554,29 +609,37 @@ class ReportPdfService {
           ),
           child: pw.Column(
             crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: insights.map((insight) => pw.Padding(
-              padding: const pw.EdgeInsets.only(bottom: 6),
-              child: pw.Row(
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
-                children: [
-                  pw.Container(
-                    width: 6,
-                    height: 6,
-                    margin: const pw.EdgeInsets.only(top: 3, right: 8),
-                    decoration: pw.BoxDecoration(
-                      color: _primaryColor,
-                      shape: pw.BoxShape.circle,
+            children: insights
+                .map(
+                  (insight) => pw.Padding(
+                    padding: const pw.EdgeInsets.only(bottom: 6),
+                    child: pw.Row(
+                      crossAxisAlignment: pw.CrossAxisAlignment.start,
+                      children: [
+                        pw.Container(
+                          width: 6,
+                          height: 6,
+                          margin: const pw.EdgeInsets.only(top: 3, right: 8),
+                          decoration: pw.BoxDecoration(
+                            color: _primaryColor,
+                            shape: pw.BoxShape.circle,
+                          ),
+                        ),
+                        pw.Expanded(
+                          child: pw.Text(
+                            insight,
+                            style: pw.TextStyle(
+                              fontSize: 10,
+                              color: _textPrimary,
+                              lineSpacing: 2,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                  pw.Expanded(
-                    child: pw.Text(
-                      insight,
-                      style: pw.TextStyle(fontSize: 10, color: _textPrimary, lineSpacing: 2),
-                    ),
-                  ),
-                ],
-              ),
-            )).toList(),
+                )
+                .toList(),
           ),
         ),
       ],
@@ -597,12 +660,38 @@ class ReportPdfService {
   }
 
   static String _dateShort(DateTime date) {
-    const months = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agt','Sep','Okt','Nov','Des'];
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'Mei',
+      'Jun',
+      'Jul',
+      'Agt',
+      'Sep',
+      'Okt',
+      'Nov',
+      'Des',
+    ];
     return '${date.day} ${months[date.month - 1]} ${date.year}';
   }
 
   static String _bucketLabel(DateTime start, DateTime end) {
-    const months = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agt','Sep','Okt','Nov','Des'];
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'Mei',
+      'Jun',
+      'Jul',
+      'Agt',
+      'Sep',
+      'Okt',
+      'Nov',
+      'Des',
+    ];
     if (start.month == end.month) {
       return '${start.day}-${end.day}\n${months[start.month - 1]}';
     }
