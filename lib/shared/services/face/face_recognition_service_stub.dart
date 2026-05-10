@@ -21,8 +21,12 @@ class FaceRecognitionService {
 
   Future<void> init() async {}
   Future<void> dispose() async {}
-  Future<List<double>?> extractEmbedding(dynamic fullImage, dynamic face) async => null;
-  Future<List<double>?> extractEmbeddingFromCrop(dynamic faceImage) async => null;
+  Future<List<double>?> extractEmbedding(
+    dynamic fullImage,
+    dynamic face,
+  ) async => null;
+  Future<List<double>?> extractEmbeddingFromCrop(dynamic faceImage) async =>
+      null;
   Future<List<double>?> extractEmbeddingFromNv21({
     required Uint8List nv21Bytes,
     required int width,
@@ -30,18 +34,20 @@ class FaceRecognitionService {
     required InputImageRotation rotation,
     required dynamic face,
   }) async => null;
-  RecognitionResult findBestMatch(List<double> q, Map<String, List<double>> stored) =>
-      const RecognitionResult(matched: false, similarity: 0, euclideanDist: 0);
+  RecognitionResult findBestMatch(
+    List<double> q,
+    Map<String, List<double>> stored,
+  ) => const RecognitionResult(matched: false, similarity: 0, euclideanDist: 0);
   RecognitionResult findBestMatchMulti(
     List<double> q,
     Map<String, List<List<double>>> stored,
-  ) =>
-      const RecognitionResult(matched: false, similarity: 0, euclideanDist: 0);
+  ) => const RecognitionResult(matched: false, similarity: 0, euclideanDist: 0);
   static double cosineSimilarity(List<double> a, List<double> b) => 0;
   static double euclideanDistance(List<double> a, List<double> b) => 0;
   static List<double> averageEmbeddings(List<List<double>> e) => [];
   static List<double> bestEmbedding(List<List<double>> e) => [];
-  static List<double> normalizeEmbedding(List<double> embedding) => List<double>.from(embedding);
-  double get threshold => 0.72;
+  static List<double> normalizeEmbedding(List<double> embedding) =>
+      List<double>.from(embedding);
+  double get threshold => 1.25;
   bool get isInitialized => false;
 }

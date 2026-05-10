@@ -34,13 +34,11 @@ class EmbeddingSyncService {
   /// Save a single embedding to both SQLite and Supabase.
   /// Kept for backward compatibility — prefer [saveEmbeddings] for multi-pose.
   Future<void> saveEmbedding(String employeeId, List<double> embedding) async {
-    final normalized = FaceRecognitionService.normalizeEmbedding(embedding);
-
-    await EmbeddingDb.instance.upsert(employeeId, normalized);
+    await EmbeddingDb.instance.upsert(employeeId, embedding);
 
     await _client.from(_table).upsert({
       'employee_id': employeeId,
-      'embedding': jsonEncode(normalized),
+      'embedding': jsonEncode(embedding),
       'updated_at': DateTime.now().toIso8601String(),
     });
   }
@@ -51,15 +49,11 @@ class EmbeddingSyncService {
     String employeeId,
     List<List<double>> embeddings,
   ) async {
-    final normalized = embeddings
-        .map((e) => FaceRecognitionService.normalizeEmbedding(e))
-        .toList();
-
-    await EmbeddingDb.instance.upsertMulti(employeeId, normalized);
+    await EmbeddingDb.instance.upsertMulti(employeeId, embeddings);
 
     await _client.from(_table).upsert({
       'employee_id': employeeId,
-      'embedding': jsonEncode(normalized),
+      'embedding': jsonEncode(embeddings),
       'updated_at': DateTime.now().toIso8601String(),
     });
   }
@@ -85,22 +79,15 @@ class EmbeddingSyncService {
     if (decoded.first is List) {
       // v2: list of lists
       embeddings = decoded
-          .map((e) =>
-              (e as List).map((n) => (n as num).toDouble()).toList())
+          .map((e) => (e as List).map((n) => (n as num).toDouble()).toList())
           .toList();
     } else {
       // v1: single list
-      embeddings = [
-        decoded.map((e) => (e as num).toDouble()).toList(),
-      ];
+      embeddings = [decoded.map((e) => (e as num).toDouble()).toList()];
     }
 
-    final normalized = embeddings
-        .map((e) => FaceRecognitionService.normalizeEmbedding(e))
-        .toList();
-
-    await EmbeddingDb.instance.upsertMulti(employeeId, normalized);
-    return normalized;
+    await EmbeddingDb.instance.upsertMulti(employeeId, embeddings);
+    return embeddings;
   }
 
   /// Backward-compat single-embedding fetch — returns first embedding only.
@@ -153,9 +140,9 @@ class EmbeddingSyncService {
   Future<void> adaptEmbedding(
     String employeeId,
     List<double> newEmbedding, {
-    double minSimilarity = 0.55,
-    double maxSimilarity = 0.80,
-    double alpha = 0.08,
+    double minSimilarity = 0.80,
+    double maxSimilarity = 0.93,
+    double alpha = 0.05,
   }) async {
     final stored = await getEmbeddings(employeeId);
     if (stored == null || stored.isEmpty) return;
@@ -164,14 +151,18 @@ class EmbeddingSyncService {
     int bestIdx = 0;
     double bestSim = -1;
     for (int i = 0; i < stored.length; i++) {
-      final sim = FaceRecognitionService.cosineSimilarity(newEmbedding, stored[i]);
+      final sim = FaceRecognitionService.cosineSimilarity(
+        newEmbedding,
+        stored[i],
+      );
       if (sim > bestSim) {
         bestSim = sim;
         bestIdx = i;
       }
     }
 
-    // Hanya update kalau similarity ada di zona "hampir cocok".
+    // Hanya update kalau similarity sudah cukup kuat (80–93%) agar
+    // data wajah tidak rusak oleh percobaan yang gagal atau tidak stabil.
     if (bestSim < minSimilarity || bestSim > maxSimilarity) return;
 
     // EMA: blended = normalize((1-alpha)*old + alpha*new)
@@ -187,11 +178,15 @@ class EmbeddingSyncService {
 
     // Simpan ke SQLite lokal dulu (cepat), Supabase background.
     await EmbeddingDb.instance.upsertMulti(employeeId, updated);
-    _client.from(_table).upsert({
-      'employee_id': employeeId,
-      'embedding': jsonEncode(updated),
-      'updated_at': DateTime.now().toIso8601String(),
-    }).then((_) {}).catchError((_) {});
+    _client
+        .from(_table)
+        .upsert({
+          'employee_id': employeeId,
+          'embedding': jsonEncode(updated),
+          'updated_at': DateTime.now().toIso8601String(),
+        })
+        .then((_) {})
+        .catchError((_) {});
   }
 
   // ── Delete (re-enrollment) ────────────────────────────────────────────────

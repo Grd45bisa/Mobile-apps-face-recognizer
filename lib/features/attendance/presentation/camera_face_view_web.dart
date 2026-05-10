@@ -5,11 +5,26 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
 import '../../../shared/theme/app_colors.dart';
 
-enum CameraFaceState { loading, ready, scanning, detected, timeout, error, done }
-enum LiveRecognitionStatus { noFace, detecting, recognized, uncertain, rejected }
+enum CameraFaceState {
+  loading,
+  ready,
+  scanning,
+  detected,
+  timeout,
+  error,
+  done,
+}
 
-class LiveRecognitionResult {
-  final LiveRecognitionStatus status;
+enum LiveFaceDetectionStatus {
+  noFace,
+  detecting,
+  recognized,
+  uncertain,
+  rejected,
+}
+
+class LiveFaceDetectionResult {
+  final LiveFaceDetectionStatus status;
   final double similarity;
   final img.Image? fullImage;
   final dynamic inputImage;
@@ -19,7 +34,7 @@ class LiveRecognitionResult {
   final InputImageRotation? rotation;
   final dynamic face;
 
-  const LiveRecognitionResult({
+  const LiveFaceDetectionResult({
     required this.status,
     this.similarity = 0,
     this.fullImage,
@@ -32,17 +47,19 @@ class LiveRecognitionResult {
   });
 }
 
-typedef FaceDetectedCallback = Future<void> Function({
-  required img.Image fullImage,
-  required dynamic inputImage,
-  required Uint8List? nv21Bytes,
-  required int rawWidth,
-  required int rawHeight,
-  required InputImageRotation rotation,
-  required dynamic face,
-});
+typedef FaceDetectedCallback =
+    Future<void> Function({
+      required img.Image fullImage,
+      required dynamic inputImage,
+      required Uint8List? nv21Bytes,
+      required int rawWidth,
+      required int rawHeight,
+      required InputImageRotation rotation,
+      required dynamic face,
+    });
 
-typedef LiveRecognitionCallback = void Function(LiveRecognitionResult result);
+typedef LiveFaceDetectionCallback =
+    void Function(LiveFaceDetectionResult result);
 
 class CameraFaceView extends StatefulWidget {
   final bool active;
@@ -50,7 +67,7 @@ class CameraFaceView extends StatefulWidget {
   final FaceDetectedCallback? onFaceDetected;
   final VoidCallback? onTimeout;
   final bool liveMode;
-  final LiveRecognitionCallback? onLiveRecognition;
+  final LiveFaceDetectionCallback? onLiveFaceDetection;
 
   const CameraFaceView({
     super.key,
@@ -59,7 +76,7 @@ class CameraFaceView extends StatefulWidget {
     this.onFaceDetected,
     this.onTimeout,
     this.liveMode = false,
-    this.onLiveRecognition,
+    this.onLiveFaceDetection,
   });
 
   @override
@@ -71,6 +88,7 @@ class CameraFaceViewState extends State<CameraFaceView> {
   void resetToReady() {}
   void markDone() {}
   Future<void> refreshCamera() async {}
+  Future<void> pauseLiveStream() async {}
 
   @override
   Widget build(BuildContext context) {
@@ -83,7 +101,11 @@ class CameraFaceViewState extends State<CameraFaceView> {
       child: const Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.no_photography_outlined, size: 40, color: AppColors.textSecondary),
+          Icon(
+            Icons.no_photography_outlined,
+            size: 40,
+            color: AppColors.textSecondary,
+          ),
           SizedBox(height: 12),
           Text(
             'Kamera tidak tersedia di browser',

@@ -2,14 +2,16 @@ import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+import 'package:image/image.dart' as img;
 import '../../../shared/theme/app_colors.dart';
 import '../../../shared/models/app_models.dart';
 import '../../../shared/services/attendance_service.dart';
 import '../../../shared/services/auth_service.dart';
 import '../../../shared/providers/notification_provider.dart';
 import '../../../shared/store/app_store.dart';
-import '../../../shared/services/face/face_recognition_service.dart';
 import '../../../shared/services/face/embedding_sync_service.dart';
+import '../../../shared/services/face/face_recognition_service.dart';
 import '../../enrollment/presentation/enrollment_screen.dart';
 import 'camera_face_view.dart';
 
@@ -30,25 +32,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   bool _isEnrolled = false;
   bool _enrollChecked = false;
 
-  // Live recognition state
-  double _liveSimilarity = 0;
-  bool _liveRecognized = false;
-  bool _recognizing = false;
-  List<List<double>>? _cachedEmbeddings;
-  String? _cachedUid;
-
-  // Frame terakhir yang dikenali — dipakai saat user tekan tombol.
-  _RecognizedFrame? _lastRecognizedFrame;
-
-  // Throttle recognition agar tidak spam inference.
-  bool _inferencing = false;
-  static const Duration _inferenceThrottle = Duration(milliseconds: 400);
-  DateTime _lastInference = DateTime(0);
-
-  // Temporal smoothing — rata-rata embedding dari N frame terakhir
-  // sebelum matching agar hasil lebih stabil.
-  static const int _smoothingWindow = 5;
-  final List<List<double>> _embeddingBuffer = [];
+  bool _checkingFace = false;
+  bool _faceMatched = false;
+  bool _matchFailed = false;
+  double? _lastDistance;
+  int _sampleAttempts = 0;
+  double _bestDistance = double.infinity;
+  static const int _maxVerificationSamples = 3;
 
   DateTime get _today =>
       DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
@@ -72,122 +62,83 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       });
       return;
     }
+
     final uid = AuthService.instance.currentUserId;
     if (uid == null) return;
-    final enrolled = await EmbeddingSyncService.instance.isEnrolledOnCloud(uid);
+    final embedding = await EmbeddingSyncService.instance.getEmbedding(uid);
     if (!mounted) return;
     setState(() {
-      _isEnrolled = enrolled;
+      _isEnrolled = embedding != null;
       _enrollChecked = true;
     });
-
-    // Pre-load embeddings ke cache supaya live recognition tidak perlu
-    // fetch tiap frame.
-    if (enrolled) unawaited(_preloadEmbeddings(uid));
   }
 
-  Future<void> _preloadEmbeddings(String uid) async {
-    final embeddings = await EmbeddingSyncService.instance.getEmbeddings(uid);
-    if (!mounted) return;
-    _cachedEmbeddings = embeddings;
-    _cachedUid = uid;
-  }
+  // -- Face match callback --------------------------------------------------
 
-  // ── Live recognition callback ─────────────────────────────────────────────
-
-  void _onLiveRecognition(LiveRecognitionResult result) {
+  Future<void> _onFaceDetectedForAttendance({
+    required img.Image fullImage,
+    required Face face,
+  }) async {
     if (_processing || _isCheckedOut) return;
-    if (result.status == LiveRecognitionStatus.noFace) {
-      _embeddingBuffer.clear();
-      if (_liveRecognized || _liveSimilarity > 0) {
-        setState(() {
-          _liveRecognized = false;
-          _liveSimilarity = 0;
-          _lastRecognizedFrame = null;
-        });
-      }
-      return;
-    }
 
-    // Frame ada wajah tapi belum ada face object untuk di-infer.
-    if (result.face == null) {
-      if (!_recognizing) setState(() => _recognizing = true);
-      return;
-    }
+    setState(() {
+      _checkingFace = true;
+      _matchFailed = false;
+      _lastDistance = null;
+      _sampleAttempts++;
+    });
 
-    // Throttle inference.
-    final now = DateTime.now();
-    if (_inferencing || now.difference(_lastInference) < _inferenceThrottle) return;
-    _lastInference = now;
-    _inferencing = true;
-
-    unawaited(_runInference(result));
-  }
-
-  Future<void> _runInference(LiveRecognitionResult frame) async {
     try {
-      final stored = _cachedEmbeddings;
-      final uid = _cachedUid;
-      if (stored == null || stored.isEmpty || uid == null) return;
+      final uid = AuthService.instance.currentUserId;
+      if (uid == null) return;
 
-      final face = frame.face!;
-
-      List<double>? queryEmbedding;
-      if (frame.nv21Bytes != null) {
-        queryEmbedding = await FaceRecognitionService.instance
-            .extractEmbeddingFromNv21(
-              nv21Bytes: frame.nv21Bytes!,
-              width: frame.rawWidth,
-              height: frame.rawHeight,
-              rotation: frame.rotation!,
-              face: face,
-            )
-            .timeout(const Duration(seconds: 4));
-      } else if (frame.fullImage != null) {
-        queryEmbedding = await FaceRecognitionService.instance
-            .extractEmbedding(frame.fullImage!, face)
-            .timeout(const Duration(seconds: 4));
-      } else {
+      final stored = await EmbeddingSyncService.instance.getEmbedding(uid);
+      if (stored == null) {
+        if (!mounted) return;
+        setState(() {
+          _isEnrolled = false;
+          _checkingFace = false;
+        });
+        _cameraKey.currentState?.resetToReady();
         return;
       }
 
-      if (queryEmbedding == null || !mounted) return;
-
-      // Temporal smoothing: tambah ke buffer, buang yang paling lama.
-      _embeddingBuffer.add(queryEmbedding);
-      if (_embeddingBuffer.length > _smoothingWindow) {
-        _embeddingBuffer.removeAt(0);
-      }
-      final smoothedEmbedding = _embeddingBuffer.length > 1
-          ? FaceRecognitionService.averageEmbeddings(_embeddingBuffer)
-          : queryEmbedding;
-
-      final result = FaceRecognitionService.instance.findBestMatchMulti(
-        smoothedEmbedding,
-        {uid: stored},
+      final query = await FaceRecognitionService.instance.extractEmbedding(
+        fullImage,
+        face,
       );
+      if (query == null) {
+        _showFaceMatchFailed('Wajah tidak terbaca dengan jelas.');
+        return;
+      }
+
+      final result = FaceRecognitionService.instance.findBestMatch(query, {
+        uid: stored,
+      });
+      _lastDistance = result.euclideanDist;
+
+      if (!result.matched) {
+        _bestDistance = result.euclideanDist < _bestDistance
+            ? result.euclideanDist
+            : _bestDistance;
+        if (_sampleAttempts < _maxVerificationSamples) {
+          await _scanNextFaceSample();
+        } else {
+          _showFaceMatchFailed(
+            'Wajah tidak mirip dengan data terdaftar. Silakan konfirmasi ulang.',
+          );
+        }
+        return;
+      }
 
       if (!mounted) return;
-
-      setState(() {
-        _liveSimilarity = result.similarity;
-        _liveRecognized = result.matched;
-        _recognizing = false;
-        if (result.matched) {
-          _lastRecognizedFrame = _RecognizedFrame(
-            queryEmbedding: smoothedEmbedding,
-          );
-        } else {
-          _lastRecognizedFrame = null;
-        }
-      });
+      setState(() => _faceMatched = true);
+      await Future.delayed(const Duration(milliseconds: 900));
+      await _recordAttendance();
     } catch (_) {
-      if (mounted) setState(() => _recognizing = false);
-    } finally {
-      _inferencing = false;
+      _showFaceMatchFailed('Presensi gagal. Coba lagi.');
     }
   }
-
   // ── Connectivity check ────────────────────────────────────────────────────
 
   Future<bool> _isOnline() async {
@@ -198,24 +149,37 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   // ── Tombol Check-In / Check-Out ditekan ───────────────────────────────────
 
   void _handleButtonTap() {
-    if (_isCheckedOut || _processing) return;
+    if (_isCheckedOut || _processing || _checkingFace) return;
     if (kIsWeb) {
       _manualCheckInOrOut();
       return;
     }
-    if (!_liveRecognized || _lastRecognizedFrame == null) return;
-    unawaited(_confirmAndRecord());
-  }
 
-  Future<void> _confirmAndRecord() async {
-    final frame = _lastRecognizedFrame;
-    if (frame == null) return;
-
-    if (_isCheckedIn) {
-      final confirmed = await _confirmCheckOut();
-      if (!confirmed) return;
+    Future<void> startScan() async {
+      setState(() {
+        _checkingFace = true;
+        _faceMatched = false;
+        _matchFailed = false;
+        _lastDistance = null;
+        _sampleAttempts = 0;
+        _bestDistance = double.infinity;
+      });
+      _cameraKey.currentState?.startScan();
     }
 
+    if (_isCheckedIn) {
+      unawaited(
+        _confirmCheckOut().then((confirmed) {
+          if (confirmed && mounted) unawaited(startScan());
+        }),
+      );
+      return;
+    }
+
+    unawaited(startScan());
+  }
+
+  Future<void> _recordAttendance() async {
     setState(() => _processing = true);
 
     try {
@@ -225,11 +189,17 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           message: 'Tidak ada koneksi internet.',
           icon: Icons.wifi_off_rounded,
         );
+        _resetFaceVerificationState(failed: true);
+        _cameraKey.currentState?.resetToReady();
         return;
       }
 
       final uid = AuthService.instance.currentUserId;
-      if (uid == null) return;
+      if (uid == null) {
+        _resetFaceVerificationState(failed: true);
+        _cameraKey.currentState?.resetToReady();
+        return;
+      }
 
       if (!_isCheckedIn) {
         final record = await AttendanceService.instance.checkIn(
@@ -243,6 +213,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           success: true,
           message: 'Check-in berhasil pukul ${_fmtTod(record.checkIn!)}',
         );
+        _showSuccessDialog(
+          title: 'Check-In Berhasil',
+          message: 'Selamat bekerja. Semoga harimu produktif dan lancar.',
+          icon: Icons.work_rounded,
+          color: AppColors.success,
+        );
       } else {
         final record = await AttendanceService.instance.checkOut(uid);
         if (!mounted) return;
@@ -254,29 +230,46 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           message: 'Check-out berhasil pukul ${_fmtTod(record.checkOut!)}',
           color: AppColors.error,
         );
+        _showSuccessDialog(
+          title: 'Check-Out Berhasil',
+          message:
+              'Selamat beristirahat. Terima kasih untuk kerja keras hari ini.',
+          icon: Icons.nightlight_round,
+          color: AppColors.error,
+        );
       }
 
-      // Adaptive embedding update — update di background, jangan blok UI.
-      unawaited(
-        EmbeddingSyncService.instance.adaptEmbedding(uid, frame.queryEmbedding),
-      );
-
-      setState(() {
-        _liveRecognized = false;
-        _liveSimilarity = 0;
-        _lastRecognizedFrame = null;
-      });
+      _resetFaceVerificationState();
+      if (!_isCheckedOut) _cameraKey.currentState?.resetToReady();
     } catch (e) {
       if (mounted) {
-        _showResult(success: false, message: 'Gagal menyimpan presensi. Coba lagi.');
+        _showResult(
+          success: false,
+          message: 'Gagal menyimpan presensi. Coba lagi.',
+        );
       }
     } finally {
       if (mounted) setState(() => _processing = false);
     }
   }
 
+  Future<void> _scanNextFaceSample() async {
+    if (!mounted || _processing || _isCheckedOut) return;
+    setState(() {
+      _lastDistance = _bestDistance.isFinite ? _bestDistance : null;
+      _matchFailed = false;
+      _faceMatched = false;
+      _checkingFace = true;
+    });
+    await Future.delayed(const Duration(milliseconds: 450));
+    if (!mounted || _processing || _isCheckedOut) return;
+    _cameraKey.currentState?.resetToReady();
+    await Future.delayed(const Duration(milliseconds: 120));
+    if (!mounted || _processing || _isCheckedOut) return;
+    _cameraKey.currentState?.startScan();
+  }
+
   Future<bool> _confirmCheckOut() async {
-    final pct = (_liveSimilarity * 100).toStringAsFixed(0);
     final result = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -285,9 +278,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           'Konfirmasi Check-Out',
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
         ),
-        content: Text(
-          'Wajah dikenali ($pct%). Lanjutkan check-out sekarang?',
-          style: const TextStyle(fontSize: 13, color: AppColors.textSecondary),
+        content: const Text(
+          'Sistem akan mengambil foto dan mencocokkan wajah. Lanjutkan check-out sekarang?',
+          style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
         ),
         actions: [
           TextButton(
@@ -300,9 +293,14 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               backgroundColor: AppColors.error,
               foregroundColor: Colors.white,
               elevation: 0,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
             ),
-            child: const Text('Check-Out', style: TextStyle(fontWeight: FontWeight.w600)),
+            child: const Text(
+              'Check-Out',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
           ),
         ],
       ),
@@ -354,14 +352,16 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        backgroundColor: color ?? (success ? AppColors.success : AppColors.error),
+        backgroundColor:
+            color ?? (success ? AppColors.success : AppColors.error),
         duration: const Duration(seconds: 4),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         content: Row(
           children: [
             Icon(
-              icon ?? (success ? Icons.check_circle_rounded : Icons.error_rounded),
+              icon ??
+                  (success ? Icons.check_circle_rounded : Icons.error_rounded),
               color: Colors.white,
               size: 18,
             ),
@@ -369,13 +369,100 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             Expanded(
               child: Text(
                 message,
-                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                style: const TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                ),
               ),
             ),
           ],
         ),
       ),
     );
+  }
+
+  void _showFaceMatchFailed(String message) {
+    if (!mounted) return;
+    _resetFaceVerificationState(failed: true);
+    _showResult(success: false, message: message);
+    Future.delayed(const Duration(milliseconds: 1400), () {
+      if (!mounted || _processing) return;
+      _cameraKey.currentState?.resetToReady();
+    });
+  }
+
+  Future<void> _showSuccessDialog({
+    required String title,
+    required String message,
+    required IconData icon,
+    required Color color,
+  }) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 58,
+              height: 58,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, color: color, size: 30),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            ),
+          ],
+        ),
+        content: Text(
+          message,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 13,
+            height: 1.45,
+            color: AppColors.textSecondary,
+          ),
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: color,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            child: const Text(
+              'Oke',
+              style: TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _resetFaceVerificationState({bool failed = false}) {
+    if (!mounted) return;
+    setState(() {
+      _checkingFace = false;
+      _faceMatched = false;
+      _matchFailed = failed;
+      _lastDistance = failed && _bestDistance.isFinite ? _bestDistance : null;
+      _sampleAttempts = 0;
+      _bestDistance = double.infinity;
+    });
   }
 
   Future<void> _goToEnrollment() async {
@@ -418,7 +505,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                   const SizedBox(height: 14),
                   Expanded(child: _buildCameraArea()),
                   const SizedBox(height: 10),
-                  if (!_isCheckedOut && !kIsWeb) _buildRecognitionStatus(),
+                  if (!_isCheckedOut && !kIsWeb) _buildFaceDetectionStatus(),
                   const SizedBox(height: 14),
                   _buildActionButton(),
                 ],
@@ -430,41 +517,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     );
   }
 
-  // ── Recognition status ────────────────────────────────────────────────────
+  // ── Face detection status ─────────────────────────────────────────────────
 
-  Widget _buildRecognitionStatus() {
-    final (icon, label, color, bg) = switch (true) {
-      _ when _processing => (
-          Icons.hourglass_top_rounded,
-          'Menyimpan presensi...',
-          AppColors.primary,
-          AppColors.primaryLight,
-        ),
-      _ when _liveRecognized => (
-          Icons.verified_rounded,
-          'Wajah dikenali — tekan tombol untuk presensi',
-          AppColors.success,
-          AppColors.successLight,
-        ),
-      _ when _recognizing => (
-          Icons.manage_search_rounded,
-          'Mengenali wajah...',
-          AppColors.warning,
-          AppColors.warningLight,
-        ),
-      _ when _liveSimilarity > 0 => (
-          Icons.face_retouching_off_rounded,
-          'Wajah tidak cocok, coba lagi',
-          AppColors.error,
-          AppColors.errorLight,
-        ),
-      _ => (
-          Icons.face_rounded,
-          'Arahkan wajah ke kamera',
-          AppColors.textSecondary,
-          AppColors.background,
-        ),
-    };
+  Widget _buildFaceDetectionStatus() {
+    final (icon, label, color, bg) = _faceDetectionStatusStyle();
 
     return Container(
       width: double.infinity,
@@ -481,11 +537,59 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           Expanded(
             child: Text(
               label,
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color),
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: color,
+              ),
             ),
           ),
         ],
       ),
+    );
+  }
+
+  (IconData, String, Color, Color) _faceDetectionStatusStyle() {
+    if (_processing) {
+      return (
+        Icons.hourglass_top_rounded,
+        'Menyimpan presensi...',
+        AppColors.primary,
+        AppColors.primaryLight,
+      );
+    }
+    if (_faceMatched) {
+      return (
+        Icons.verified_rounded,
+        'Wajah cocok. Menyimpan presensi...',
+        AppColors.success,
+        AppColors.successLight,
+      );
+    }
+    if (_checkingFace) {
+      final sample = _sampleAttempts.clamp(1, _maxVerificationSamples);
+      return (
+        Icons.manage_search_rounded,
+        'Menganalisis wajah... ($sample/$_maxVerificationSamples)',
+        AppColors.primary,
+        AppColors.primaryLight,
+      );
+    }
+    if (_matchFailed) {
+      return (
+        Icons.face_retouching_off_rounded,
+        _lastDistance == null
+            ? 'Wajah tidak mirip. Konfirmasi ulang lagi.'
+            : 'Wajah tidak mirip. Konfirmasi ulang lagi (${_lastDistance!.toStringAsFixed(2)}).',
+        AppColors.error,
+        AppColors.errorLight,
+      );
+    }
+    return (
+      Icons.face_rounded,
+      'Tekan tombol presensi untuk mencocokkan wajah',
+      AppColors.textSecondary,
+      AppColors.background,
     );
   }
 
@@ -531,7 +635,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               height: 50,
               child: ElevatedButton.icon(
                 onPressed: _goToEnrollment,
-                icon: const Icon(Icons.face_retouching_natural_rounded, size: 20),
+                icon: const Icon(
+                  Icons.face_retouching_natural_rounded,
+                  size: 20,
+                ),
                 label: const Text(
                   'Daftarkan Wajah Sekarang',
                   style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
@@ -588,10 +695,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       actions: [
         Padding(
           padding: const EdgeInsets.fromLTRB(0, 0, 16, 0),
-          child: Align(
-            alignment: Alignment.center,
-            child: _buildStatusBadge(),
-          ),
+          child: Align(alignment: Alignment.center, child: _buildStatusBadge()),
         ),
       ],
       bottom: const PreferredSize(
@@ -605,7 +709,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     final (label, color, bg) = _statusStyle();
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(20),
+      ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -613,7 +720,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           const SizedBox(width: 5),
           Text(
             label,
-            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: color),
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
           ),
         ],
       ),
@@ -621,8 +732,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   }
 
   (String, Color, Color) _statusStyle() {
-    if (_isCheckedOut) return ('Selesai', AppColors.success, AppColors.successLight);
-    if (_isCheckedIn) return ('Sudah Check-In', AppColors.warning, AppColors.warningLight);
+    if (_isCheckedOut) {
+      return ('Selesai', AppColors.success, AppColors.successLight);
+    }
+    if (_isCheckedIn) {
+      return ('Sudah Check-In', AppColors.warning, AppColors.warningLight);
+    }
     return ('Belum Hadir', AppColors.missing, AppColors.missingLight);
   }
 
@@ -683,13 +798,37 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               key: _cameraKey,
               active: widget.isActive,
               hint: 'Arahkan wajah ke kamera',
-              liveMode: !kIsWeb,
-              onLiveRecognition: _onLiveRecognition,
+              liveMode: false,
+              onTimeout: () {
+                if (!mounted) return;
+                _sampleAttempts++;
+                if (_sampleAttempts > 0 &&
+                    _sampleAttempts < _maxVerificationSamples) {
+                  unawaited(_scanNextFaceSample());
+                  return;
+                }
+                _showFaceMatchFailed(
+                  'Wajah tidak terdeteksi. Silakan konfirmasi ulang.',
+                );
+              },
+              onFaceDetected:
+                  ({
+                    required fullImage,
+                    required inputImage,
+                    required nv21Bytes,
+                    required rawWidth,
+                    required rawHeight,
+                    required rotation,
+                    required face,
+                  }) => _onFaceDetectedForAttendance(
+                    fullImage: fullImage,
+                    face: face,
+                  ),
             ),
     );
   }
 
-  // ── Supporting info ───────────────────────────────────────────────────────
+  // ── Completed attendance view ─────────────────────────────────────────────
 
   Widget _buildCompletedAttendanceView() {
     return Container(
@@ -708,12 +847,22 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               decoration: BoxDecoration(
                 color: Colors.white,
                 shape: BoxShape.circle,
-                border: Border.all(color: AppColors.success.withValues(alpha: 0.16)),
+                border: Border.all(
+                  color: AppColors.success.withValues(alpha: 0.16),
+                ),
                 boxShadow: const [
-                  BoxShadow(color: Color(0x120F172A), blurRadius: 16, offset: Offset(0, 8)),
+                  BoxShadow(
+                    color: Color(0x120F172A),
+                    blurRadius: 16,
+                    offset: Offset(0, 8),
+                  ),
                 ],
               ),
-              child: const Icon(Icons.check_circle_rounded, size: 36, color: AppColors.success),
+              child: const Icon(
+                Icons.check_circle_rounded,
+                size: 36,
+                color: AppColors.success,
+              ),
             ),
             const SizedBox(height: 18),
             Text(
@@ -729,7 +878,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             Text(
               _completedAttendanceMessage(),
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 13, height: 1.45, color: AppColors.textSecondary),
+              style: const TextStyle(
+                fontSize: 13,
+                height: 1.45,
+                color: AppColors.textSecondary,
+              ),
             ),
             const SizedBox(height: 16),
             Container(
@@ -767,7 +920,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     final checkInText = checkIn != null ? _fmtTod(checkIn) : '--:--';
     final checkOutText = checkOut != null ? _fmtTod(checkOut) : '--:--';
     return 'Check-in tercatat pukul $checkInText dan check-out pukul '
-        '$checkOutText. Semua proses verifikasi wajah untuk hari ini sudah selesai.';
+        '$checkOutText. Deteksi kamera untuk hari ini sudah selesai.';
   }
 
   String _completedAttendanceFooter() {
@@ -787,15 +940,19 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         child: ElevatedButton.icon(
           onPressed: null,
           icon: const Icon(Icons.check_circle_rounded, size: 20),
-          label: const Text('Presensi Selesai',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+          label: const Text(
+            'Presensi Selesai',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+          ),
           style: ElevatedButton.styleFrom(
             backgroundColor: AppColors.successLight,
             foregroundColor: AppColors.success,
             disabledBackgroundColor: AppColors.successLight,
             disabledForegroundColor: AppColors.success,
             elevation: 0,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
           ),
         ),
       );
@@ -807,49 +964,61 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         height: 54,
         child: ElevatedButton.icon(
           onPressed: _processing ? null : _handleButtonTap,
-          icon: Icon(_isCheckedIn ? Icons.logout_rounded : Icons.login_rounded, size: 20),
+          icon: Icon(
+            _isCheckedIn ? Icons.logout_rounded : Icons.login_rounded,
+            size: 20,
+          ),
           label: Text(
-            _processing ? 'Memproses…' : (_isCheckedIn ? 'Check-Out Manual' : 'Check-In Manual'),
+            _processing
+                ? 'Memproses…'
+                : (_isCheckedIn ? 'Check-Out Manual' : 'Check-In Manual'),
             style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
           ),
           style: ElevatedButton.styleFrom(
             backgroundColor: _isCheckedIn ? AppColors.error : AppColors.primary,
             foregroundColor: Colors.white,
             elevation: 0,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
           ),
         ),
       );
     }
 
-    // Mode live: tombol aktif hanya kalau wajah sudah dikenali.
-    final canPress = _liveRecognized && !_processing;
+    final busy = _processing || _checkingFace;
     final label = _processing
-        ? 'Memproses…'
-        : (_liveRecognized
-            ? (_isCheckedIn ? 'Konfirmasi Check-Out' : 'Konfirmasi Check-In')
-            : (_isCheckedIn ? 'Menunggu verifikasi wajah...' : 'Menunggu verifikasi wajah...'));
-
+        ? 'Memproses...'
+        : (_checkingFace
+              ? 'Menganalisis wajah...'
+              : (_isCheckedIn
+                    ? 'Konfirmasi Check-Out'
+                    : 'Konfirmasi Check-In'));
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
       width: double.infinity,
       height: 54,
       child: ElevatedButton.icon(
-        onPressed: canPress ? _handleButtonTap : null,
+        onPressed: busy ? null : _handleButtonTap,
         icon: Icon(
-          _liveRecognized
+          !_checkingFace
               ? (_isCheckedIn ? Icons.logout_rounded : Icons.login_rounded)
               : Icons.face_retouching_natural_rounded,
           size: 20,
         ),
-        label: Text(label, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+        label: Text(
+          label,
+          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+        ),
         style: ElevatedButton.styleFrom(
           backgroundColor: _isCheckedIn ? AppColors.error : AppColors.primary,
           foregroundColor: Colors.white,
           disabledBackgroundColor: AppColors.border,
           disabledForegroundColor: AppColors.textSecondary,
           elevation: 0,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
         ),
       ),
     );
@@ -860,20 +1029,31 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   String _fmtTod(TimeOfDay t) =>
       '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
-
   String _todayLabel() {
     final now = DateTime.now();
     const months = [
-      'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
-      'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember',
+      'Januari',
+      'Februari',
+      'Maret',
+      'April',
+      'Mei',
+      'Juni',
+      'Juli',
+      'Agustus',
+      'September',
+      'Oktober',
+      'November',
+      'Desember',
     ];
-    const days = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
+    const days = [
+      'Senin',
+      'Selasa',
+      'Rabu',
+      'Kamis',
+      'Jumat',
+      'Sabtu',
+      'Minggu',
+    ];
     return '${days[now.weekday - 1]}, ${now.day} ${months[now.month - 1]} ${now.year}';
   }
-}
-
-/// Embedding yang berhasil dikenali, disimpan sampai user tekan tombol.
-class _RecognizedFrame {
-  final List<double> queryEmbedding;
-  const _RecognizedFrame({required this.queryEmbedding});
 }

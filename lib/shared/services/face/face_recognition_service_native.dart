@@ -8,8 +8,8 @@ import 'package:tflite_flutter/tflite_flutter.dart';
 class RecognitionResult {
   final bool matched;
   final String? employeeId;
-  final double similarity;       // cosine similarity [0, 1]
-  final double euclideanDist;    // euclidean distance (lower = more similar)
+  final double similarity; // cosine similarity [0, 1]
+  final double euclideanDist; // euclidean distance (lower = more similar)
 
   const RecognitionResult({
     required this.matched,
@@ -30,9 +30,9 @@ class FaceRecognitionService {
   bool _initialized = false;
 
   // Cosine similarity threshold for L2-normalized MobileFaceNet embeddings.
-  // 0.55 tolerates lighting changes, wet hair, and expression variation
-  // (smile, squint) while still reliably rejecting different people.
-  static const double _threshold = 0.55;
+  // 0.80 enforces strict identity matching for attendance — ensures the
+  // button is only enabled when the face is genuinely recognized.
+  static const double _euclideanThreshold = 1.25;
 
   static const int _inputSize = 112;
   static const int _embeddingSize = 192;
@@ -61,21 +61,41 @@ class FaceRecognitionService {
 
   /// Extract embedding from a decoded still image + MLKit face object.
   /// Used by enrollment (high-res JPEG) and attendance still-capture fallback.
-  Future<List<double>?> extractEmbedding(
-    img.Image fullImage,
-    Face face,
-  ) async {
+  Future<List<double>?> extractEmbedding(img.Image fullImage, Face face) async {
     if (!_initialized) await init();
-    final cropped = _alignAndCrop(fullImage, face);
+    final cropped = cropFace(fullImage, face);
     if (cropped == null) return null;
-    return _runInference(cropped);
+    return extractEmbeddingFromCrop(cropped);
   }
 
   /// Extract embedding from an already-cropped face image (any size → resized internally).
   Future<List<double>?> extractEmbeddingFromCrop(img.Image faceImage) async {
     if (!_initialized) await init();
-    final resized = img.copyResize(faceImage, width: _inputSize, height: _inputSize);
+    final resized = img.copyResize(
+      faceImage,
+      width: _inputSize,
+      height: _inputSize,
+    );
     return _runInference(resized);
+  }
+
+  img.Image? cropFace(img.Image fullImage, Face face) {
+    final box = face.boundingBox;
+    final left = box.left.toInt().clamp(0, fullImage.width - 1);
+    final top = box.top.toInt().clamp(0, fullImage.height - 1);
+    final right = box.right.toInt().clamp(left + 1, fullImage.width);
+    final bottom = box.bottom.toInt().clamp(top + 1, fullImage.height);
+    final width = right - left;
+    final height = bottom - top;
+    if (width <= 10 || height <= 10) return null;
+
+    return img.copyCrop(
+      fullImage,
+      x: left,
+      y: top,
+      width: width,
+      height: height,
+    );
   }
 
   /// Extract embedding from NV21 bytes by decoding ONLY the face crop region.
@@ -98,25 +118,28 @@ class FaceRecognitionService {
     final cropW = (box.width + padding * 2).clamp(1, width - cropX).toInt();
     final cropH = (box.height + padding * 2).clamp(1, height - cropY).toInt();
 
-    final leftEye  = face.landmarks[FaceLandmarkType.leftEye];
+    final leftEye = face.landmarks[FaceLandmarkType.leftEye];
     final rightEye = face.landmarks[FaceLandmarkType.rightEye];
 
     // Decode only the crop region from NV21 in a background isolate,
     // passing eye landmarks so alignment matches the enrollment pipeline.
-    final faceImage = await compute(_nv21CropToImage, _NV21CropParams(
-      nv21: nv21Bytes,
-      frameWidth: width,
-      frameHeight: height,
-      cropX: cropX,
-      cropY: cropY,
-      cropW: cropW,
-      cropH: cropH,
-      rotation: rotation,
-      leX: leftEye?.position.x.toDouble(),
-      leY: leftEye?.position.y.toDouble(),
-      reX: rightEye?.position.x.toDouble(),
-      reY: rightEye?.position.y.toDouble(),
-    ));
+    final faceImage = await compute(
+      _nv21CropToImage,
+      _NV21CropParams(
+        nv21: nv21Bytes,
+        frameWidth: width,
+        frameHeight: height,
+        cropX: cropX,
+        cropY: cropY,
+        cropW: cropW,
+        cropH: cropH,
+        rotation: rotation,
+        leX: leftEye?.position.x.toDouble(),
+        leY: leftEye?.position.y.toDouble(),
+        reX: rightEye?.position.x.toDouble(),
+        reY: rightEye?.position.y.toDouble(),
+      ),
+    );
 
     if (faceImage == null) return null;
     return _runInference(faceImage);
@@ -145,7 +168,8 @@ class FaceRecognitionService {
 
         final r = (yVal + 1.370705 * (vVal - 128)).round().clamp(0, 255);
         final g = (yVal - 0.698001 * (vVal - 128) - 0.337633 * (uVal - 128))
-            .round().clamp(0, 255);
+            .round()
+            .clamp(0, 255);
         final b = (yVal + 1.732446 * (uVal - 128)).round().clamp(0, 255);
         raw.setPixelRgb(cx, cy, r, g, b);
       }
@@ -184,6 +208,7 @@ class FaceRecognitionService {
             return cx2.toDouble();
         }
       }
+
       double mapY(double fx, double fy) {
         final cx2 = fx - p.cropX;
         final cy2 = fy - p.cropY;
@@ -223,7 +248,7 @@ class FaceRecognitionService {
         return isX ? rx : ry;
       }
 
-      final mX = (rot(leXr, leYr, true)  + rot(reXr, reYr, true))  / 2.0;
+      final mX = (rot(leXr, leYr, true) + rot(reXr, reYr, true)) / 2.0;
       final mY = (rot(leXr, leYr, false) + rot(reXr, reYr, false)) / 2.0;
       final eyeDist = (rot(reXr, reYr, true) - rot(leXr, leYr, true)).abs();
 
@@ -256,95 +281,6 @@ class FaceRecognitionService {
   ///    distance changes — the #1 cause of embedding instability.
   /// 2. If landmarks are absent, fall back to the bounding-box crop with
   ///    40% padding (generous enough for MobileFaceNet).
-  img.Image? _alignAndCrop(img.Image src, Face face) {
-    final leftEye  = face.landmarks[FaceLandmarkType.leftEye];
-    final rightEye = face.landmarks[FaceLandmarkType.rightEye];
-
-    if (leftEye != null && rightEye != null) {
-      return _eyeAnchorCrop(src, face, leftEye, rightEye);
-    }
-    return _bboxCrop(src, face: face);
-  }
-
-  /// Eye-anchor crop: rotate so eyes are horizontal, crop around eye midpoint.
-  img.Image? _eyeAnchorCrop(
-    img.Image src,
-    Face face,
-    FaceLandmark leftEye,
-    FaceLandmark rightEye,
-  ) {
-    final leX = leftEye.position.x.toDouble();
-    final leY = leftEye.position.y.toDouble();
-    final reX = rightEye.position.x.toDouble();
-    final reY = rightEye.position.y.toDouble();
-
-    // 1. Rotate full image to level the eye line.
-    final dx = reX - leX;
-    final dy = reY - leY;
-    final angle = math.atan2(dy, dx) * 180 / math.pi;
-    final rotated = angle.abs() > 1.0
-        ? img.copyRotate(src, angle: -angle)
-        : src;
-
-    // After rotation the eye positions shift — recompute mid-point.
-    // Since we rotate around the image centre, apply the same transform
-    // to the landmark coordinates.
-    final cx = src.width / 2.0;
-    final cy = src.height / 2.0;
-    final rad = -angle * math.pi / 180.0;
-    final cosA = math.cos(rad);
-    final sinA = math.sin(rad);
-
-    double rotPt(double px, double py, bool isX) {
-      final rx = cosA * (px - cx) - sinA * (py - cy) + cx;
-      final ry = sinA * (px - cx) + cosA * (py - cy) + cy;
-      return isX ? rx : ry;
-    }
-
-    final mX = (rotPt(leX, leY, true)  + rotPt(reX, reY, true))  / 2.0;
-    final mY = (rotPt(leX, leY, false) + rotPt(reX, reY, false)) / 2.0;
-
-    // Eye distance after rotation (dx only, line is now horizontal).
-    final eyeDist = (rotPt(reX, reY, true) - rotPt(leX, leY, true)).abs();
-    if (eyeDist < 4) return _bboxCrop(src, face: face, rotated: rotated);
-
-    // Crop size = 3.5× eye distance — empirically good for MobileFaceNet.
-    // Eye midpoint sits at ~38% from top of the crop (standard alignment).
-    final cropSize = (eyeDist * 3.5).round();
-    final left   = (mX - cropSize / 2.0).round();
-    final top    = (mY - cropSize * 0.38).round();
-
-    final x = left.clamp(0, rotated.width - 1);
-    final y = top.clamp(0, rotated.height - 1);
-    final w = cropSize.clamp(1, rotated.width  - x);
-    final h = cropSize.clamp(1, rotated.height - y);
-
-    if (w < 20 || h < 20) return null;
-
-    final cropped = img.copyCrop(rotated, x: x, y: y, width: w, height: h);
-    return img.copyResize(cropped, width: _inputSize, height: _inputSize);
-  }
-
-  /// Bounding-box fallback crop with 40% padding.
-  img.Image? _bboxCrop(img.Image src, {Face? face, img.Image? rotated}) {
-    final image = rotated ?? src;
-    final box   = face?.boundingBox;
-    if (box == null) return null;
-
-    final padding = (box.width * 0.4).toInt();
-    final x = (box.left  - padding).clamp(0, image.width  - 1).toInt();
-    final y = (box.top   - padding).clamp(0, image.height - 1).toInt();
-    final w = (box.width  + padding * 2).clamp(1, image.width  - x).toInt();
-    final h = (box.height + padding * 2).clamp(1, image.height - y).toInt();
-
-    if (w <= 0 || h <= 0) return null;
-
-    final cropped = img.copyCrop(image, x: x, y: y, width: w, height: h);
-    return img.copyResize(cropped, width: _inputSize, height: _inputSize);
-  }
-
-  // ── TFLite inference ──────────────────────────────────────────────────────
-
   List<double> _runInference(img.Image face112) {
     // MobileFaceNet: NHWC float32, RGB, normalized to [-1, 1]
     final Float32List flatInput = Float32List(_inputSize * _inputSize * 3);
@@ -364,8 +300,7 @@ class FaceRecognitionService {
 
     _interpreter!.run(input, output);
 
-    final raw = (output[0] as List).map((e) => (e as num).toDouble()).toList();
-    return _normalizeEmbedding(raw);
+    return (output[0] as List).map((e) => (e as num).toDouble()).toList();
   }
 
   // ── Matching ──────────────────────────────────────────────────────────────
@@ -377,34 +312,36 @@ class FaceRecognitionService {
     Map<String, List<double>> storedEmbeddings,
   ) {
     if (storedEmbeddings.isEmpty) {
-      return const RecognitionResult(matched: false, similarity: 0, euclideanDist: 0);
+      return const RecognitionResult(
+        matched: false,
+        similarity: 0,
+        euclideanDist: 0,
+      );
     }
 
     String? bestId;
-    double bestCosine = -1;
     double bestEuclidean = double.infinity;
 
     for (final entry in storedEmbeddings.entries) {
-      final cosine = cosineSimilarity(queryEmbedding, entry.value);
       final eucl = euclideanDistance(queryEmbedding, entry.value);
-      if (cosine > bestCosine) {
-        bestCosine = cosine;
+      if (eucl < bestEuclidean) {
         bestEuclidean = eucl;
         bestId = entry.key;
       }
     }
 
-    final matched = bestCosine >= _threshold;
+    final matched = bestEuclidean <= _euclideanThreshold;
 
     // ignore: avoid_print
-    print('[FaceRec] cosine=${bestCosine.toStringAsFixed(4)}  '
-        'euclidean=${bestEuclidean.toStringAsFixed(4)}  '
-        'matched=$matched  threshold=$_threshold');
+    print(
+      '[FaceRec] euclidean=${bestEuclidean.toStringAsFixed(4)}  '
+      'matched=$matched  threshold=$_euclideanThreshold',
+    );
 
     return RecognitionResult(
       matched: matched,
       employeeId: matched ? bestId : null,
-      similarity: bestCosine.clamp(0.0, 1.0),
+      similarity: _distanceToSimilarity(bestEuclidean),
       euclideanDist: bestEuclidean,
     );
   }
@@ -428,45 +365,50 @@ class FaceRecognitionService {
     }
 
     String? bestId;
-    double bestCosine = -1;
     double bestEuclidean = double.infinity;
 
     for (final entry in storedEmbeddings.entries) {
-      double localBestCos = -1;
       double localBestEuc = double.infinity;
       for (final stored in entry.value) {
-        final cos = cosineSimilarity(queryEmbedding, stored);
-        if (cos > localBestCos) {
-          localBestCos = cos;
-          localBestEuc = euclideanDistance(queryEmbedding, stored);
+        final eucl = euclideanDistance(queryEmbedding, stored);
+        if (eucl < localBestEuc) {
+          localBestEuc = eucl;
         }
       }
-      if (localBestCos > bestCosine) {
-        bestCosine = localBestCos;
+      if (localBestEuc < bestEuclidean) {
         bestEuclidean = localBestEuc;
         bestId = entry.key;
       }
     }
 
-    final matched = bestCosine >= _threshold;
+    final matched = bestEuclidean <= _euclideanThreshold;
 
     // ignore: avoid_print
-    print('[FaceRec] multi cosine=${bestCosine.toStringAsFixed(4)}  '
-        'euclidean=${bestEuclidean.toStringAsFixed(4)}  '
-        'matched=$matched  threshold=$_threshold');
+    print(
+      '[FaceRec] multi euclidean=${bestEuclidean.toStringAsFixed(4)}  '
+      'matched=$matched  threshold=$_euclideanThreshold',
+    );
 
     return RecognitionResult(
       matched: matched,
       employeeId: matched ? bestId : null,
-      similarity: bestCosine.clamp(0.0, 1.0),
+      similarity: _distanceToSimilarity(bestEuclidean),
       euclideanDist: bestEuclidean,
     );
+  }
+
+  static double _distanceToSimilarity(double distance) {
+    if (distance.isInfinite || distance.isNaN) return 0;
+    return (1 / (1 + distance)).clamp(0.0, 1.0);
   }
 
   // ── Static helpers ────────────────────────────────────────────────────────
 
   static double euclideanDistance(List<double> a, List<double> b) {
-    assert(a.length == b.length, 'Embedding mismatch: ${a.length} != ${b.length}');
+    assert(
+      a.length == b.length,
+      'Embedding mismatch: ${a.length} != ${b.length}',
+    );
     double sum = 0;
     for (int i = 0; i < a.length; i++) {
       final diff = a[i] - b[i];
@@ -476,7 +418,10 @@ class FaceRecognitionService {
   }
 
   static double cosineSimilarity(List<double> a, List<double> b) {
-    assert(a.length == b.length, 'Embedding mismatch: ${a.length} != ${b.length}');
+    assert(
+      a.length == b.length,
+      'Embedding mismatch: ${a.length} != ${b.length}',
+    );
     double dot = 0;
     double normA = 0;
     double normB = 0;
@@ -539,7 +484,7 @@ class FaceRecognitionService {
     return v.map((x) => x / norm).toList(growable: false);
   }
 
-  double get threshold => _threshold;
+  double get threshold => _euclideanThreshold;
   bool get isInitialized => _initialized;
 }
 

@@ -6,11 +6,10 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
 import '../../../shared/services/auth_service.dart';
 import '../../../shared/services/face/face_recognition_service.dart';
-import '../../../shared/services/face/face_quality_filter.dart';
 import '../../../shared/services/face/embedding_sync_service.dart';
 import '../../../shared/theme/app_colors.dart';
 
-enum _EnrollStep { front, left, right, smile, processing, done, error }
+enum _EnrollStep { capture, processing, done, error }
 
 class EnrollmentScreen extends StatefulWidget {
   const EnrollmentScreen({super.key});
@@ -22,22 +21,11 @@ class EnrollmentScreen extends StatefulWidget {
 class _EnrollmentScreenState extends State<EnrollmentScreen>
     with WidgetsBindingObserver {
   CameraController? _camCtrl;
-  _EnrollStep _step = _EnrollStep.front;
+  _EnrollStep _step = _EnrollStep.capture;
   String? _errorMsg;
 
-  // Averaged embedding per pose (front / left / right / smile).
-  final List<List<double>> _embeddings = [];
-
-  // Per-pose capture progress shown in the UI while sampling frames.
-  int _sampledFrames = 0;
-  int _acceptedFrames = 0;
-  static const int _targetFrames = 8; // frames to attempt per pose
-
   final _detector = FaceDetector(
-    options: FaceDetectorOptions(
-      performanceMode: FaceDetectorMode.accurate,
-      enableLandmarks: true,
-    ),
+    options: FaceDetectorOptions(performanceMode: FaceDetectorMode.accurate),
   );
 
   bool _capturing = false;
@@ -105,105 +93,52 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
 
   // ── Multi-frame capture ───────────────────────────────────────────────────
 
-  /// Tap "Ambil Foto" → kumpulkan hingga [_targetFrames] kandidat foto,
+  /// Tap "Ambil Foto" -> ambil satu foto, crop wajah, simpan satu embedding.
   /// filter kualitas tiap frame, simpan embedding dengan skor tertinggi.
   Future<void> _capture() async {
     if (_capturing || _camCtrl == null) return;
-    setState(() {
-      _capturing = true;
-      _sampledFrames = 0;
-      _acceptedFrames = 0;
-    });
+    setState(() => _capturing = true);
 
-    final acceptedEmbeddings = <List<double>>[];
-    String? lastRejectReason;
-
-    for (int attempt = 0; attempt < _targetFrames; attempt++) {
-      if (!mounted || _disposed) break;
-
-      await Future.delayed(const Duration(milliseconds: 100));
-
-      try {
-        final xFile = await _camCtrl!.takePicture();
-        final bytes = await File(xFile.path).readAsBytes();
-        final fullImage = img.decodeImage(bytes);
-        if (fullImage == null) continue;
-
-        final inputImage = InputImage.fromFilePath(xFile.path);
-        final faces = await _detector.processImage(inputImage);
-
-        if (mounted) setState(() => _sampledFrames = attempt + 1);
-
-        if (faces.isEmpty) {
-          lastRejectReason = 'Wajah tidak terdeteksi';
-          continue;
-        }
-
-        final face = faces.first;
-
-        final quality = FaceQualityFilter.evaluate(fullImage, face);
-        if (!quality.accepted) {
-          lastRejectReason = quality.rejectReason;
-          continue;
-        }
-
-        final embedding = await FaceRecognitionService.instance
-            .extractEmbedding(fullImage, face);
-        if (embedding == null) continue;
-
-        acceptedEmbeddings.add(embedding);
-        if (mounted) setState(() => _acceptedFrames = acceptedEmbeddings.length);
-      } catch (_) {
-        continue;
+    try {
+      final xFile = await _camCtrl!.takePicture();
+      final bytes = await File(xFile.path).readAsBytes();
+      final fullImage = img.decodeImage(bytes);
+      if (fullImage == null) {
+        _showSnack('Gagal membaca foto. Coba lagi.');
+        return;
       }
-    }
 
-    if (!mounted || _disposed) return;
+      final inputImage = InputImage.fromFilePath(xFile.path);
+      final faces = await _detector.processImage(inputImage);
+      if (faces.isEmpty) {
+        _showSnack('Wajah tidak terdeteksi. Coba lagi.');
+        return;
+      }
 
-    if (acceptedEmbeddings.isEmpty) {
-      _showSnack(
-        lastRejectReason != null
-            ? 'Gagal: $lastRejectReason. Coba lagi dengan pencahayaan lebih baik.'
-            : 'Tidak ada frame yang cukup berkualitas. Coba lagi.',
+      final embedding = await FaceRecognitionService.instance.extractEmbedding(
+        fullImage,
+        faces.first,
       );
-      setState(() => _capturing = false);
-      return;
-    }
+      if (embedding == null) {
+        _showSnack('Wajah tidak terbaca dengan jelas. Coba lagi.');
+        return;
+      }
 
-    // Rata-rata semua embedding yang diterima agar representasi lebih stabil
-    // terhadap variasi pencahayaan dan ekspresi saat absensi nanti.
-    final averaged = acceptedEmbeddings.length == 1
-        ? acceptedEmbeddings.first
-        : FaceRecognitionService.averageEmbeddings(acceptedEmbeddings);
-    _embeddings.add(averaged);
-
-    if (_step == _EnrollStep.front) {
+      await _finalize(embedding);
+    } catch (e) {
+      if (!mounted) return;
       setState(() {
-        _step = _EnrollStep.left;
-        _capturing = false;
-        _sampledFrames = 0;
-        _acceptedFrames = 0;
+        _errorMsg = 'Gagal mendaftarkan wajah: ${e.toString()}';
+        _step = _EnrollStep.error;
       });
-    } else if (_step == _EnrollStep.left) {
-      setState(() {
-        _step = _EnrollStep.right;
-        _capturing = false;
-        _sampledFrames = 0;
-        _acceptedFrames = 0;
-      });
-    } else if (_step == _EnrollStep.right) {
-      setState(() {
-        _step = _EnrollStep.smile;
-        _capturing = false;
-        _sampledFrames = 0;
-        _acceptedFrames = 0;
-      });
-    } else if (_step == _EnrollStep.smile) {
-      await _finalize();
+    } finally {
+      if (mounted && _step == _EnrollStep.capture) {
+        setState(() => _capturing = false);
+      }
     }
   }
 
-  Future<void> _finalize() async {
+  Future<void> _finalize(List<double> embedding) async {
     if (!mounted) return;
     setState(() {
       _step = _EnrollStep.processing;
@@ -214,9 +149,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       final uid = AuthService.instance.currentUserId;
       if (uid == null) throw Exception('Sesi tidak ditemukan');
 
-      // Simpan 3 embedding terbaik (depan / kiri / kanan) secara terpisah.
-      // Saat absensi, query dicocokkan ke embedding terbaik di antara ketiganya.
-      await EmbeddingSyncService.instance.saveEmbeddings(uid, _embeddings);
+      await EmbeddingSyncService.instance.saveEmbedding(uid, embedding);
 
       if (!mounted) return;
       setState(() => _step = _EnrollStep.done);
@@ -243,12 +176,9 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
 
   void _restart() {
     setState(() {
-      _step = _EnrollStep.front;
+      _step = _EnrollStep.capture;
       _errorMsg = null;
-      _embeddings.clear();
       _capturing = false;
-      _sampledFrames = 0;
-      _acceptedFrames = 0;
     });
   }
 
@@ -271,8 +201,10 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
           ),
         ),
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded,
-              color: AppColors.textPrimary),
+          icon: const Icon(
+            Icons.arrow_back_ios_new_rounded,
+            color: AppColors.textPrimary,
+          ),
           onPressed: () => Navigator.pop(context),
         ),
         bottom: const PreferredSize(
@@ -300,7 +232,6 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
   Widget _buildCaptureStep() {
     return Column(
       children: [
-        _buildStepIndicator(),
         const SizedBox(height: 16),
         _buildInstruction(),
         const SizedBox(height: 12),
@@ -316,106 +247,13 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
 
   // ── Step indicator ────────────────────────────────────────────────────────
 
-  Widget _buildStepIndicator() {
-    final steps = [
-      ('Depan', _EnrollStep.front),
-      ('Kiri', _EnrollStep.left),
-      ('Kanan', _EnrollStep.right),
-      ('Ekspresi', _EnrollStep.smile),
-    ];
-    final currentIndex = steps.indexWhere((s) => s.$2 == _step);
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-      child: Row(
-        children: List.generate(steps.length * 2 - 1, (i) {
-          if (i.isOdd) {
-            return Expanded(
-              child: Container(
-                height: 2,
-                color: i ~/ 2 < currentIndex
-                    ? AppColors.primary
-                    : AppColors.border,
-              ),
-            );
-          }
-          final idx = i ~/ 2;
-          final isDone = idx < currentIndex;
-          final isActive = idx == currentIndex;
-          return Column(
-            children: [
-              Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: isDone
-                      ? AppColors.success
-                      : isActive
-                          ? AppColors.primary
-                          : AppColors.border,
-                ),
-                child: Center(
-                  child: isDone
-                      ? const Icon(Icons.check_rounded,
-                          size: 16, color: Colors.white)
-                      : Text(
-                          '${idx + 1}',
-                          style: TextStyle(
-                            color: isActive
-                                ? Colors.white
-                                : AppColors.textSecondary,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13,
-                          ),
-                        ),
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                steps[idx].$1,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight:
-                      isActive ? FontWeight.w700 : FontWeight.normal,
-                  color: isActive
-                      ? AppColors.primary
-                      : AppColors.textSecondary,
-                ),
-              ),
-            ],
-          );
-        }),
-      ),
-    );
-  }
-
   // ── Instruction card ──────────────────────────────────────────────────────
 
   Widget _buildInstruction() {
-    final (title, subtitle, icon) = switch (_step) {
-      _EnrollStep.front => (
-          'Hadapkan wajah ke kamera',
-          'Pastikan wajah Anda menghadap lurus ke kamera',
-          Icons.face_rounded,
-        ),
-      _EnrollStep.left => (
-          'Miringkan kepala ke kiri',
-          'Putar kepala sekitar 30° ke arah kiri',
-          Icons.rotate_left_rounded,
-        ),
-      _EnrollStep.right => (
-          'Miringkan kepala ke kanan',
-          'Putar kepala sekitar 30° ke arah kanan',
-          Icons.rotate_right_rounded,
-        ),
-      _EnrollStep.smile => (
-          'Buat ekspresi bebas',
-          'Senyum, cemberut, atau ekspresi alami Anda sehari-hari',
-          Icons.sentiment_satisfied_alt_rounded,
-        ),
-      _ => ('', '', Icons.face_rounded),
-    };
+    const title = 'Hadapkan wajah ke kamera';
+    const subtitle =
+        'Ambil satu foto wajah yang jelas, seperti sistem referensi.';
+    const icon = Icons.face_rounded;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -429,23 +267,25 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
           children: [
             Icon(icon, color: AppColors.primary, size: 28),
             const SizedBox(width: 12),
-            Expanded(
+            const Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     title,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
                       color: AppColors.primary,
                     ),
                   ),
-                  const SizedBox(height: 2),
+                  SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: const TextStyle(
-                        fontSize: 12, color: AppColors.textSecondary),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textSecondary,
+                    ),
                   ),
                 ],
               ),
@@ -459,40 +299,22 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
   // ── Sampling progress ─────────────────────────────────────────────────────
 
   Widget _buildSamplingProgress() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    return const Padding(
+      padding: EdgeInsets.symmetric(horizontal: 20),
+      child: Row(
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'Menganalisis frame $_sampledFrames/$_targetFrames…',
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: AppColors.textSecondary,
-                ),
-              ),
-              Text(
-                '$_acceptedFrames diterima',
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.primary,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              value: _targetFrames > 0 ? _sampledFrames / _targetFrames : 0,
-              backgroundColor: AppColors.border,
+          SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
               color: AppColors.primary,
-              minHeight: 6,
             ),
+          ),
+          SizedBox(width: 10),
+          Text(
+            'Menganalisis wajah...',
+            style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
           ),
         ],
       ),
@@ -552,15 +374,15 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
               : const Icon(Icons.camera_alt_rounded, size: 20),
           label: Text(
             _capturing ? 'Mengambil sampel…' : 'Ambil Foto',
-            style: const TextStyle(
-                fontSize: 15, fontWeight: FontWeight.w700),
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
           ),
           style: ElevatedButton.styleFrom(
             backgroundColor: AppColors.primary,
             foregroundColor: Colors.white,
             elevation: 0,
             shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12)),
+              borderRadius: BorderRadius.circular(12),
+            ),
           ),
         ),
       ),
@@ -621,8 +443,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
             const SizedBox(height: 8),
             const Text(
               'Data wajah Anda telah disimpan dengan aman.\nAnda sekarang dapat menggunakan absensi wajah.',
-              style: TextStyle(
-                  fontSize: 13, color: AppColors.textSecondary),
+              style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 32),
@@ -636,12 +457,12 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
                   foregroundColor: Colors.white,
                   elevation: 0,
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
                 child: const Text(
                   'Selesai',
-                  style: TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.w700),
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
                 ),
               ),
             ),
@@ -683,7 +504,9 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
             Text(
               _errorMsg ?? 'Terjadi kesalahan.',
               style: const TextStyle(
-                  fontSize: 13, color: AppColors.textSecondary),
+                fontSize: 13,
+                color: AppColors.textSecondary,
+              ),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 32),
@@ -697,12 +520,12 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
                   foregroundColor: Colors.white,
                   elevation: 0,
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
                 child: const Text(
                   'Coba Lagi',
-                  style: TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.w700),
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
                 ),
               ),
             ),
@@ -712,4 +535,3 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     );
   }
 }
-
