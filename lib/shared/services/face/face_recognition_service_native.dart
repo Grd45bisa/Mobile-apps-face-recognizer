@@ -4,6 +4,8 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
 
+import 'face_quality_filter.dart';
+
 /// Result of a recognition attempt, carrying both similarity metrics for debug.
 class RecognitionResult {
   final bool matched;
@@ -19,8 +21,17 @@ class RecognitionResult {
   });
 }
 
-/// MobileFaceNet pipeline:
-///   Camera frame → MLKit detection → alignment → crop 112×112 → TFLite → embedding 192-dim L2-normalized
+/// Thrown when a camera frame fails pre-inference quality checks.
+/// The [reason] is a localised Indonesian string suitable for snackbar display.
+class QualityFilterException implements Exception {
+  final String reason;
+  const QualityFilterException(this.reason);
+  @override
+  String toString() => reason;
+}
+
+/// SFace pipeline:
+///   Camera frame → MLKit detection → alignment → crop 112×112 → TFLite → embedding 128-dim L2-normalized
 ///   Matching: cosine similarity (primary) + euclidean distance (debug)
 class FaceRecognitionService {
   static final FaceRecognitionService instance = FaceRecognitionService._();
@@ -29,20 +40,19 @@ class FaceRecognitionService {
   Interpreter? _interpreter;
   bool _initialized = false;
 
-  // Cosine similarity threshold for L2-normalized MobileFaceNet embeddings.
-  // 0.80 enforces strict identity matching for attendance — ensures the
-  // button is only enabled when the face is genuinely recognized.
-  static const double _euclideanThreshold = 1.25;
+  // Cosine similarity threshold for L2-normalized SFace embeddings.
+  // 0.70 is a balanced starting point for SFace identity matching.
+  static const double _cosineThreshold = 0.70;
 
   static const int _inputSize = 112;
-  static const int _embeddingSize = 192;
+  static const int _embeddingSize = 128;
 
   // ── Init ──────────────────────────────────────────────────────────────────
 
   Future<void> init() async {
     if (_initialized) return;
     _interpreter = await Interpreter.fromAsset(
-      'assets/models/mobilefacenet.tflite',
+      'assets/models/sface.tflite',
     );
     // ignore: avoid_print
     print('[FaceRec] input shape: ${_interpreter!.getInputTensor(0).shape}');
@@ -63,6 +73,12 @@ class FaceRecognitionService {
   /// Used by enrollment (high-res JPEG) and attendance still-capture fallback.
   Future<List<double>?> extractEmbedding(img.Image fullImage, Face face) async {
     if (!_initialized) await init();
+
+    final quality = FaceQualityFilter.evaluate(fullImage, face);
+    if (!quality.accepted) {
+      throw QualityFilterException(quality.rejectReason ?? 'Kualitas wajah buruk');
+    }
+
     final cropped = cropFace(fullImage, face);
     if (cropped == null) return null;
     return extractEmbeddingFromCrop(cropped);
@@ -108,6 +124,13 @@ class FaceRecognitionService {
     required Face face,
   }) async {
     if (!_initialized) await init();
+
+    final quality = FaceQualityFilter.evaluateFast(face, width, height);
+    if (!quality.accepted) {
+      // ignore: avoid_print
+      print('[FaceRec] Quality rejected: ${quality.rejectReason}');
+      throw QualityFilterException(quality.rejectReason ?? 'Kualitas wajah buruk');
+    }
 
     // Compute the padded crop region in the original (pre-rotation) NV21 space.
     // We decode only this region instead of the full multi-megapixel frame.
@@ -271,7 +294,7 @@ class FaceRecognitionService {
 
   // ── Alignment & crop ──────────────────────────────────────────────────────
 
-  /// Align and crop the face to 112×112 for MobileFaceNet inference.
+  /// Align and crop the face to 112×112 for SFace inference.
   ///
   /// Strategy (eye-anchor):
   /// 1. If both eye landmarks are available, rotate the full image so the
@@ -280,9 +303,9 @@ class FaceRecognitionService {
   ///    This makes the crop position invariant to small head tilts and
   ///    distance changes — the #1 cause of embedding instability.
   /// 2. If landmarks are absent, fall back to the bounding-box crop with
-  ///    40% padding (generous enough for MobileFaceNet).
+  ///    40% padding (generous enough for SFace).
   List<double> _runInference(img.Image face112) {
-    // MobileFaceNet: NHWC float32, RGB, normalized to [-1, 1]
+    // SFace: NHWC float32, RGB, normalized to [-1, 1]
     final Float32List flatInput = Float32List(_inputSize * _inputSize * 3);
     int idx = 0;
     for (int y = 0; y < _inputSize; y++) {
@@ -320,28 +343,31 @@ class FaceRecognitionService {
     }
 
     String? bestId;
+    double bestSimilarity = -1.0;
     double bestEuclidean = double.infinity;
 
     for (final entry in storedEmbeddings.entries) {
-      final eucl = euclideanDistance(queryEmbedding, entry.value);
-      if (eucl < bestEuclidean) {
-        bestEuclidean = eucl;
+      final sim = cosineSimilarity(queryEmbedding, entry.value);
+      if (sim > bestSimilarity) {
+        bestSimilarity = sim;
+        bestEuclidean = euclideanDistance(queryEmbedding, entry.value);
         bestId = entry.key;
       }
     }
 
-    final matched = bestEuclidean <= _euclideanThreshold;
+    final matched = bestSimilarity >= _cosineThreshold;
 
     // ignore: avoid_print
     print(
-      '[FaceRec] euclidean=${bestEuclidean.toStringAsFixed(4)}  '
-      'matched=$matched  threshold=$_euclideanThreshold',
+      '[FaceRec] similarity=${bestSimilarity.toStringAsFixed(4)}  '
+      'euclidean=${bestEuclidean.toStringAsFixed(4)}  '
+      'matched=$matched  threshold=$_cosineThreshold',
     );
 
     return RecognitionResult(
       matched: matched,
       employeeId: matched ? bestId : null,
-      similarity: _distanceToSimilarity(bestEuclidean),
+      similarity: bestSimilarity,
       euclideanDist: bestEuclidean,
     );
   }
@@ -365,41 +391,41 @@ class FaceRecognitionService {
     }
 
     String? bestId;
+    double bestSimilarity = -1.0;
     double bestEuclidean = double.infinity;
 
     for (final entry in storedEmbeddings.entries) {
+      double localBestSim = -1.0;
       double localBestEuc = double.infinity;
       for (final stored in entry.value) {
-        final eucl = euclideanDistance(queryEmbedding, stored);
-        if (eucl < localBestEuc) {
-          localBestEuc = eucl;
+        final sim = cosineSimilarity(queryEmbedding, stored);
+        if (sim > localBestSim) {
+          localBestSim = sim;
+          localBestEuc = euclideanDistance(queryEmbedding, stored);
         }
       }
-      if (localBestEuc < bestEuclidean) {
+      if (localBestSim > bestSimilarity) {
+        bestSimilarity = localBestSim;
         bestEuclidean = localBestEuc;
         bestId = entry.key;
       }
     }
 
-    final matched = bestEuclidean <= _euclideanThreshold;
+    final matched = bestSimilarity >= _cosineThreshold;
 
     // ignore: avoid_print
     print(
-      '[FaceRec] multi euclidean=${bestEuclidean.toStringAsFixed(4)}  '
-      'matched=$matched  threshold=$_euclideanThreshold',
+      '[FaceRec] multi similarity=${bestSimilarity.toStringAsFixed(4)}  '
+      'euclidean=${bestEuclidean.toStringAsFixed(4)}  '
+      'matched=$matched  threshold=$_cosineThreshold',
     );
 
     return RecognitionResult(
       matched: matched,
       employeeId: matched ? bestId : null,
-      similarity: _distanceToSimilarity(bestEuclidean),
+      similarity: bestSimilarity,
       euclideanDist: bestEuclidean,
     );
-  }
-
-  static double _distanceToSimilarity(double distance) {
-    if (distance.isInfinite || distance.isNaN) return 0;
-    return (1 / (1 + distance)).clamp(0.0, 1.0);
   }
 
   // ── Static helpers ────────────────────────────────────────────────────────
@@ -484,7 +510,7 @@ class FaceRecognitionService {
     return v.map((x) => x / norm).toList(growable: false);
   }
 
-  double get threshold => _euclideanThreshold;
+  double get threshold => _cosineThreshold;
   bool get isInitialized => _initialized;
 }
 

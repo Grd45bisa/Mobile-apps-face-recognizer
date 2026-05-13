@@ -1,0 +1,110 @@
+--- lib/shared/services/face/face_recognition_service_native.dart
++++ lib/shared/services/face/face_recognition_service_native.dart
+@@ -32,7 +32,7 @@
+   // Cosine similarity threshold for L2-normalized MobileFaceNet embeddings.
+   // 0.80 enforces strict identity matching for attendance — ensures the
+   // button is only enabled when the face is genuinely recognized.
+-  static const double _euclideanThreshold = 1.25;
++  static const double _cosineThreshold = 0.80;
+ 
+   static const int _inputSize = 112;
+   static const int _embeddingSize = 192;
+@@ -320,30 +320,33 @@
+     }
+ 
+     String? bestId;
+-    double bestEuclidean = double.infinity;
++    double bestSimilarity = -1.0;
++    double bestEuclidean = double.infinity;
+ 
+     for (final entry in storedEmbeddings.entries) {
+-      final eucl = euclideanDistance(queryEmbedding, entry.value);
+-      if (eucl < bestEuclidean) {
+-        bestEuclidean = eucl;
++      final sim = cosineSimilarity(queryEmbedding, entry.value);
++      if (sim > bestSimilarity) {
++        bestSimilarity = sim;
++        bestEuclidean = euclideanDistance(queryEmbedding, entry.value);
+         bestId = entry.key;
+       }
+     }
+ 
+-    final matched = bestEuclidean <= _euclideanThreshold;
++    final matched = bestSimilarity >= _cosineThreshold;
+ 
+     // ignore: avoid_print
+     print(
+-      '[FaceRec] euclidean=${bestEuclidean.toStringAsFixed(4)}  '
+-      'matched=$matched  threshold=$_euclideanThreshold',
++      '[FaceRec] similarity=${bestSimilarity.toStringAsFixed(4)}  '
++      'euclidean=${bestEuclidean.toStringAsFixed(4)}  '
++      'matched=$matched  threshold=$_cosineThreshold',
+     );
+ 
+     return RecognitionResult(
+       matched: matched,
+       employeeId: matched ? bestId : null,
+-      similarity: _distanceToSimilarity(bestEuclidean),
++      similarity: bestSimilarity,
+       euclideanDist: bestEuclidean,
+     );
+   }
+@@ -365,37 +368,41 @@
+     }
+ 
+     String? bestId;
+-    double bestEuclidean = double.infinity;
++    double bestSimilarity = -1.0;
++    double bestEuclidean = double.infinity;
+ 
+     for (final entry in storedEmbeddings.entries) {
+-      double localBestEuc = double.infinity;
++      double localBestSim = -1.0;
++      double localBestEuc = double.infinity;
+       for (final stored in entry.value) {
+-        final eucl = euclideanDistance(queryEmbedding, stored);
+-        if (eucl < localBestEuc) {
+-          localBestEuc = eucl;
++        final sim = cosineSimilarity(queryEmbedding, stored);
++        if (sim > localBestSim) {
++          localBestSim = sim;
++          localBestEuc = euclideanDistance(queryEmbedding, stored);
+         }
+       }
+-      if (localBestEuc < bestEuclidean) {
+-        bestEuclidean = localBestEuc;
++      if (localBestSim > bestSimilarity) {
++        bestSimilarity = localBestSim;
++        bestEuclidean = localBestEuc;
+         bestId = entry.key;
+       }
+     }
+ 
+-    final matched = bestEuclidean <= _euclideanThreshold;
++    final matched = bestSimilarity >= _cosineThreshold;
+ 
+     // ignore: avoid_print
+     print(
+-      '[FaceRec] multi euclidean=${bestEuclidean.toStringAsFixed(4)}  '
+-      'matched=$matched  threshold=$_euclideanThreshold',
++      '[FaceRec] multi similarity=${bestSimilarity.toStringAsFixed(4)}  '
++      'euclidean=${bestEuclidean.toStringAsFixed(4)}  '
++      'matched=$matched  threshold=$_cosineThreshold',
+     );
+ 
+     return RecognitionResult(
+       matched: matched,
+       employeeId: matched ? bestId : null,
+-      similarity: _distanceToSimilarity(bestEuclidean),
++      similarity: bestSimilarity,
+       euclideanDist: bestEuclidean,
+     );
+   }
+@@ -484,7 +491,7 @@
+     return v.map((x) => x / norm).toList(growable: false);
+   }
+ 
+-  double get threshold => _euclideanThreshold;
++  double get threshold => _cosineThreshold;
+   bool get isInitialized => _initialized;
+ }

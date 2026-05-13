@@ -22,7 +22,9 @@ class EmbeddingSyncService {
   EmbeddingSyncService._();
 
   static const _table = 'face_embeddings';
-  static const double _duplicateFaceThreshold = 1.25;
+  // Approximate Euclidean distance threshold for cosine similarity 0.70:
+  // euc^2 = 2 - 2*cos => euc = sqrt(2 - 2*0.7) ≈ 0.775
+  static const double _duplicateFaceThreshold = 0.78;
 
   SupabaseClient get _client => SupabaseClientService.client;
 
@@ -42,6 +44,7 @@ class EmbeddingSyncService {
     await _client.from(_table).upsert({
       'employee_id': employeeId,
       'embedding': jsonEncode(embedding),
+      'face_enrollment_at': DateTime.now().toIso8601String(),
       'updated_at': DateTime.now().toIso8601String(),
     });
   }
@@ -64,6 +67,7 @@ class EmbeddingSyncService {
     await _client.from(_table).upsert({
       'employee_id': employeeId,
       'embedding': jsonEncode(embeddings),
+      'face_enrollment_at': DateTime.now().toIso8601String(),
       'updated_at': DateTime.now().toIso8601String(),
     });
   }

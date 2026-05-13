@@ -15,6 +15,14 @@ class RecognitionResult {
   });
 }
 
+/// Quality filter exception thrown when a frame is rejected before inference.
+class QualityFilterException implements Exception {
+  final String reason;
+  const QualityFilterException(this.reason);
+  @override
+  String toString() => reason;
+}
+
 class FaceRecognitionService {
   static final FaceRecognitionService instance = FaceRecognitionService._();
   FaceRecognitionService._();

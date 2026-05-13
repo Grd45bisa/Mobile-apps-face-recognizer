@@ -35,9 +35,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   bool _checkingFace = false;
   bool _faceMatched = false;
   bool _matchFailed = false;
-  double? _lastDistance;
+  double? _lastSimilarity;
   int _sampleAttempts = 0;
-  double _bestDistance = double.infinity;
+  double _bestSimilarity = -1.0;
   static const int _maxVerificationSamples = 3;
 
   DateTime get _today =>
@@ -65,10 +65,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
     final uid = AuthService.instance.currentUserId;
     if (uid == null) return;
-    final embedding = await EmbeddingSyncService.instance.getEmbedding(uid);
+    final embeddings = await EmbeddingSyncService.instance.getEmbeddings(uid);
     if (!mounted) return;
     setState(() {
-      _isEnrolled = embedding != null;
+      _isEnrolled = embeddings != null && embeddings.isNotEmpty;
       _enrollChecked = true;
     });
   }
@@ -84,7 +84,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     setState(() {
       _checkingFace = true;
       _matchFailed = false;
-      _lastDistance = null;
+      _lastSimilarity = null;
       _sampleAttempts++;
     });
 
@@ -92,8 +92,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       final uid = AuthService.instance.currentUserId;
       if (uid == null) return;
 
-      final stored = await EmbeddingSyncService.instance.getEmbedding(uid);
-      if (stored == null) {
+      final stored = await EmbeddingSyncService.instance.getEmbeddings(uid);
+      if (stored == null || stored.isEmpty) {
         if (!mounted) return;
         setState(() {
           _isEnrolled = false;
@@ -112,15 +112,15 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         return;
       }
 
-      final result = FaceRecognitionService.instance.findBestMatch(query, {
+      final result = FaceRecognitionService.instance.findBestMatchMulti(query, {
         uid: stored,
       });
-      _lastDistance = result.euclideanDist;
+      _lastSimilarity = result.similarity;
 
       if (!result.matched) {
-        _bestDistance = result.euclideanDist < _bestDistance
-            ? result.euclideanDist
-            : _bestDistance;
+        _bestSimilarity = result.similarity > _bestSimilarity
+            ? result.similarity
+            : _bestSimilarity;
         if (_sampleAttempts < _maxVerificationSamples) {
           await _scanNextFaceSample();
         } else {
@@ -135,8 +135,14 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       setState(() => _faceMatched = true);
       await Future.delayed(const Duration(milliseconds: 900));
       await _recordAttendance();
-    } catch (_) {
-      _showFaceMatchFailed('Presensi gagal. Coba lagi.');
+    } catch (e) {
+      if (e is QualityFilterException) {
+        _showFaceMatchFailed(e.reason);
+      } else {
+        // ignore: avoid_print
+        print('[Attendance] Error during face match: $e');
+        _showFaceMatchFailed('Presensi gagal. Coba lagi.');
+      }
     }
   }
   // ── Connectivity check ────────────────────────────────────────────────────
@@ -160,9 +166,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         _checkingFace = true;
         _faceMatched = false;
         _matchFailed = false;
-        _lastDistance = null;
+        _lastSimilarity = null;
         _sampleAttempts = 0;
-        _bestDistance = double.infinity;
+        _bestSimilarity = -1.0;
       });
       _cameraKey.currentState?.startScan();
     }
@@ -256,7 +262,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   Future<void> _scanNextFaceSample() async {
     if (!mounted || _processing || _isCheckedOut) return;
     setState(() {
-      _lastDistance = _bestDistance.isFinite ? _bestDistance : null;
+      _lastSimilarity = _bestSimilarity >= 0 ? _bestSimilarity : null;
       _matchFailed = false;
       _faceMatched = false;
       _checkingFace = true;
@@ -459,9 +465,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       _checkingFace = false;
       _faceMatched = false;
       _matchFailed = failed;
-      _lastDistance = failed && _bestDistance.isFinite ? _bestDistance : null;
+      _lastSimilarity = failed && _bestSimilarity >= 0 ? _bestSimilarity : null;
       _sampleAttempts = 0;
-      _bestDistance = double.infinity;
+      _bestSimilarity = -1.0;
     });
   }
 
@@ -598,16 +604,16 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     if (_matchFailed) {
       return (
         Icons.face_retouching_off_rounded,
-        _lastDistance == null
+        _lastSimilarity == null
             ? 'Wajah tidak mirip. Konfirmasi ulang lagi.'
-            : 'Wajah tidak mirip. Konfirmasi ulang lagi (${_lastDistance!.toStringAsFixed(2)}).',
+            : 'Wajah tidak mirip. Konfirmasi ulang lagi (${(_lastSimilarity! * 100).toStringAsFixed(0)}%).',
         AppColors.error,
         AppColors.errorLight,
       );
     }
     return (
       Icons.face_rounded,
-      'Tekan tombol presensi untuk mencocokkan wajah',
+      'Tekan presensi → arahkan wajah → kedipkan mata 2x',
       AppColors.textSecondary,
       AppColors.background,
     );
@@ -881,7 +887,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             : CameraFaceView(
                 key: _cameraKey,
                 active: widget.isActive,
-                hint: 'Arahkan wajah ke kamera',
+                hint: 'Arahkan wajah ke kamera & kedipkan mata 2x',
                 liveMode: false,
                 onTimeout: () {
                   if (!mounted) return;

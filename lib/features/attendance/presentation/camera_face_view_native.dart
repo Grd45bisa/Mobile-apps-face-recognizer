@@ -102,9 +102,9 @@ class CameraFaceViewState extends State<CameraFaceView>
     options: FaceDetectorOptions(
       performanceMode: FaceDetectorMode.fast,
       enableLandmarks: true,
-      enableClassification: false,
+      enableClassification: true,
       enableContours: false,
-      enableTracking: false,
+      enableTracking: true,
     ),
   );
 
@@ -116,6 +116,10 @@ class CameraFaceViewState extends State<CameraFaceView>
   List<Face> _visibleFaces = const [];
   Size? _visibleImageSize;
   InputImageRotation? _visibleRotation;
+
+  int _blinkCount = 0;
+  bool _eyesPreviouslyClosed = false;
+  bool _livenessPassed = false;
 
   static const int _timeoutSec = 10;
 
@@ -235,6 +239,7 @@ class CameraFaceViewState extends State<CameraFaceView>
 
       // Live mode: langsung mulai stream setelah kamera siap.
       if (widget.liveMode) {
+        _resetLiveness();
         unawaited(_startLiveStream());
       }
     } catch (e) {
@@ -340,12 +345,35 @@ class CameraFaceViewState extends State<CameraFaceView>
         rotation,
       );
 
+      final face = faces.first;
+
+      // ── Liveness Detection (Blink tracking) ────────────────────────────────
+      if (face.leftEyeOpenProbability != null &&
+          face.rightEyeOpenProbability != null) {
+        final leftOpen = face.leftEyeOpenProbability! > 0.5;
+        final rightOpen = face.rightEyeOpenProbability! > 0.5;
+        final bothClosed = !leftOpen && !rightOpen;
+
+        if (bothClosed) {
+          _eyesPreviouslyClosed = true;
+        } else if (_eyesPreviouslyClosed && leftOpen && rightOpen) {
+          // Both eyes were closed, now both are open = 1 blink.
+          _blinkCount++;
+          _eyesPreviouslyClosed = false;
+          if (_blinkCount >= 2) {
+            _livenessPassed = true;
+          }
+          if (mounted) setState(() {}); // Update UI for blink count
+        }
+      }
+
       // Fast check — hanya bounding box + tilt, tanpa decode pixel.
-      final quality = FaceQualityFilter.evaluateFast(faces.first, imgW, imgH);
+      final quality = FaceQualityFilter.evaluateFast(face, imgW, imgH);
       if (!quality.accepted) {
         widget.onLiveFaceDetection?.call(
-          const LiveFaceDetectionResult(
+          LiveFaceDetectionResult(
             status: LiveFaceDetectionStatus.detecting,
+            face: face,
           ),
         );
         return;
@@ -359,7 +387,7 @@ class CameraFaceViewState extends State<CameraFaceView>
           rawWidth: imgW,
           rawHeight: imgH,
           rotation: rotation,
-          face: faces.first,
+          face: face,
         ),
       );
     } catch (_) {
@@ -430,11 +458,32 @@ class CameraFaceViewState extends State<CameraFaceView>
         _updateVisibleFaces(const [], null, null);
         return;
       }
+
+      final face = faces.first;
       _updateVisibleFaces(
         faces,
         Size(image.width.toDouble(), image.height.toDouble()),
         rotation,
       );
+
+      // ── Liveness Detection (Blink tracking) untuk Scan Mode ───────────────
+      if (face.leftEyeOpenProbability != null &&
+          face.rightEyeOpenProbability != null) {
+        final leftOpen = face.leftEyeOpenProbability! > 0.5;
+        final rightOpen = face.rightEyeOpenProbability! > 0.5;
+        final bothClosed = !leftOpen && !rightOpen;
+
+        if (bothClosed) {
+          _eyesPreviouslyClosed = true;
+        } else if (_eyesPreviouslyClosed && leftOpen && rightOpen) {
+          _blinkCount++;
+          _eyesPreviouslyClosed = false;
+          if (_blinkCount >= 2) {
+            _livenessPassed = true;
+          }
+          if (mounted) setState(() {});
+        }
+      }
 
       final fullImage = _cameraImageToImage(image, rotation);
       if (fullImage == null) return;
@@ -447,9 +496,32 @@ class CameraFaceViewState extends State<CameraFaceView>
         rawWidth: image.width,
         rawHeight: image.height,
         rotation: rotation,
-        face: faces.first,
+        face: face,
         qualityScore: 1,
       );
+
+      // Require liveness for face acceptance in scan mode
+      if (!_livenessPassed) {
+        // Liveness not passed yet - continue scanning
+        _scanning = false;
+        _timeoutTimer?.cancel();
+        _timeoutTimer = null;
+        unawaited(_stopScan());
+
+        if (mounted) {
+          setState(() => _state = CameraFaceState.ready);
+          // Show feedback to user
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Liveness tidak terdeteksi. Kedipkan mata 2x untuk verifikasi.'),
+              backgroundColor: AppColors.warning,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+          );
+        }
+        return;
+      }
 
       _scanning = false;
       _timeoutTimer?.cancel();
@@ -620,6 +692,12 @@ class CameraFaceViewState extends State<CameraFaceView>
   }
 
   // ── State controls ────────────────────────────────────────────────────────
+
+  void _resetLiveness() {
+    _blinkCount = 0;
+    _eyesPreviouslyClosed = false;
+    _livenessPassed = false;
+  }
 
   void _onTimeout() {
     unawaited(_stopScan());
@@ -915,25 +993,31 @@ class CameraFaceViewState extends State<CameraFaceView>
                     children: [
                       Icon(
                         widget.liveMode
-                            ? Icons.face_retouching_natural_rounded
+                            ? (_livenessPassed
+                                  ? Icons.verified_user_rounded
+                                  : Icons.face_retouching_natural_rounded)
                             : (isScanning
                                   ? Icons.search_rounded
                                   : Icons.info_outline_rounded),
                         size: 13,
-                        color: Colors.white70,
+                        color: _livenessPassed ? AppColors.success : Colors.white70,
                       ),
                       const SizedBox(width: 6),
                       Text(
                         widget.liveMode
-                            ? 'Sedang memindai wajah...'
+                            ? (_livenessPassed
+                                  ? 'Liveness OK'
+                                  : (_blinkCount == 0
+                                        ? 'Kedipkan mata 2x'
+                                        : 'Kedipan: $_blinkCount / 2'))
                             : (isDetected
                                   ? 'Mencocokkan wajah...'
                                   : (isScanning
                                         ? 'Mendeteksi wajah...'
                                         : widget.hint)),
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 11,
-                          color: Colors.white,
+                          color: _livenessPassed ? AppColors.success : Colors.white,
                           fontWeight: FontWeight.w600,
                         ),
                       ),

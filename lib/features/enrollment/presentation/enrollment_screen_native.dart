@@ -11,6 +11,43 @@ import '../../../shared/theme/app_colors.dart';
 
 enum _EnrollStep { capture, processing, done, error }
 
+/// Pose definitions for multi-pose enrollment.
+/// Each entry is a (label, subtitle, icon) tuple shown in the instruction card.
+class _PoseDef {
+  const _PoseDef(this.label, this.subtitle, this.icon);
+  final String label;
+  final String subtitle;
+  final IconData icon;
+}
+
+const List<_PoseDef> _poses = [
+  _PoseDef(
+    'Tatap lurus ke depan',
+    'Posisi netral – hadapkan wajah tepat ke kamera.',
+    Icons.face_rounded,
+  ),
+  _PoseDef(
+    'Tengok sedikit ke kiri',
+    'Putar kepala ±15° ke kiri sambil tetap melihat layar.',
+    Icons.rotate_left_rounded,
+  ),
+  _PoseDef(
+    'Tengok sedikit ke kanan',
+    'Putar kepala ±15° ke kanan sambil tetap melihat layar.',
+    Icons.rotate_right_rounded,
+  ),
+  _PoseDef(
+    'Ekspresi netral',
+    'Hadap lurus – relakskan otot wajah, mulut tertutup.',
+    Icons.sentiment_neutral_rounded,
+  ),
+  _PoseDef(
+    'Ekspresi senyum',
+    'Hadap lurus – tersenyumlah secara alami.',
+    Icons.sentiment_satisfied_alt_rounded,
+  ),
+];
+
 class EnrollmentScreen extends StatefulWidget {
   const EnrollmentScreen({super.key});
 
@@ -30,6 +67,12 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
 
   bool _capturing = false;
   bool _disposed = false;
+
+  /// Index of the pose currently being captured (0–4).
+  int _currentPoseIndex = 0;
+
+  /// Accumulated embeddings – one per captured pose.
+  final List<List<double>> _capturedEmbeddings = [];
 
   @override
   void initState() {
@@ -91,10 +134,10 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     super.dispose();
   }
 
-  // ── Multi-frame capture ───────────────────────────────────────────────────
+  // ── Multi-pose capture ────────────────────────────────────────────────────
 
-  /// Tap "Ambil Foto" -> ambil satu foto, crop wajah, simpan satu embedding.
-  /// filter kualitas tiap frame, simpan embedding dengan skor tertinggi.
+  /// Capture a single pose frame, extract its embedding, advance the pose
+  /// counter. After all [_poses] are captured, call [_finalize].
   Future<void> _capture() async {
     if (_capturing || _camCtrl == null) return;
     setState(() => _capturing = true);
@@ -124,7 +167,22 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
         return;
       }
 
-      await _finalize(embedding);
+      _capturedEmbeddings.add(embedding);
+
+      final isLast = _currentPoseIndex >= _poses.length - 1;
+      if (isLast) {
+        // All poses captured – save them all.
+        await _finalize(_capturedEmbeddings);
+      } else {
+        // Advance to the next pose.
+        setState(() {
+          _currentPoseIndex++;
+          _capturing = false;
+        });
+        _showSnack(
+          'Pose $_currentPoseIndex berhasil! Sekarang: ${_poses[_currentPoseIndex].label}.',
+        );
+      }
     } on DuplicateFaceException {
       if (!mounted) return;
       setState(() {
@@ -134,18 +192,24 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _errorMsg = 'Gagal mendaftarkan wajah: ${e.toString()}';
-        _step = _EnrollStep.error;
-      });
+      // Handle conditionally exported exception via its type string
+      if (e.runtimeType.toString() == 'QualityFilterException') {
+        _showSnack((e as dynamic).reason as String);
+      } else {
+        setState(() {
+          _errorMsg = 'Gagal mendaftarkan wajah: ${e.toString()}';
+          _step = _EnrollStep.error;
+        });
+      }
     } finally {
-      if (mounted && _step == _EnrollStep.capture) {
+      if (mounted && _step == _EnrollStep.capture && _capturing) {
         setState(() => _capturing = false);
       }
     }
   }
 
-  Future<void> _finalize(List<double> embedding) async {
+  /// Persist all captured embeddings to SQLite + Supabase.
+  Future<void> _finalize(List<List<double>> embeddings) async {
     if (!mounted) return;
     setState(() {
       _step = _EnrollStep.processing;
@@ -156,14 +220,18 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       final uid = AuthService.instance.currentUserId;
       if (uid == null) throw Exception('Sesi tidak ditemukan');
 
-      await EmbeddingSyncService.instance.saveEmbedding(uid, embedding);
+      await EmbeddingSyncService.instance.saveEmbeddings(uid, embeddings);
 
       if (!mounted) return;
       setState(() => _step = _EnrollStep.done);
     } catch (e) {
       if (!mounted) return;
+      final rawError = e.toString();
+      final friendlyError = rawError.contains('failed precondition')
+          ? 'Gagal menyimpan data wajah ke server. Kemungkinan schema Supabase belum sesuai atau fungsi duplicate-check belum terpasang.'
+          : 'Gagal menyimpan data wajah: $rawError';
       setState(() {
-        _errorMsg = 'Gagal menyimpan data wajah: ${e.toString()}';
+        _errorMsg = friendlyError;
         _step = _EnrollStep.error;
       });
     }
@@ -184,6 +252,8 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
   void _restart() {
     setState(() {
       _step = _EnrollStep.capture;
+      _currentPoseIndex = 0;
+      _capturedEmbeddings.clear();
       _errorMsg = null;
       _capturing = false;
     });
@@ -240,6 +310,8 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     return Column(
       children: [
         const SizedBox(height: 16),
+        _buildPoseProgress(),
+        const SizedBox(height: 10),
         _buildInstruction(),
         const SizedBox(height: 12),
         Expanded(child: _buildCameraPreview()),
@@ -252,15 +324,42 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     );
   }
 
-  // ── Step indicator ────────────────────────────────────────────────────────
+  // ── Pose progress indicator ───────────────────────────────────────────────
+
+  Widget _buildPoseProgress() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Row(
+        children: List.generate(_poses.length, (i) {
+          final done = i < _currentPoseIndex;
+          final active = i == _currentPoseIndex;
+          return Expanded(
+            child: Padding(
+              padding: EdgeInsets.only(right: i < _poses.length - 1 ? 6 : 0),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                height: 6,
+                decoration: BoxDecoration(
+                  color: done
+                      ? AppColors.success
+                      : active
+                          ? AppColors.primary
+                          : AppColors.border,
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+            ),
+          );
+        }),
+      ),
+    );
+  }
 
   // ── Instruction card ──────────────────────────────────────────────────────
 
   Widget _buildInstruction() {
-    const title = 'Hadapkan wajah ke kamera';
-    const subtitle =
-        'Ambil satu foto wajah yang jelas, seperti sistem referensi.';
-    const icon = Icons.face_rounded;
+    final pose = _poses[_currentPoseIndex];
+    final poseLabel = 'Pose ${_currentPoseIndex + 1} / ${_poses.length} – ${pose.label}';
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -272,24 +371,24 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
         ),
         child: Row(
           children: [
-            Icon(icon, color: AppColors.primary, size: 28),
+            Icon(pose.icon, color: AppColors.primary, size: 28),
             const SizedBox(width: 12),
-            const Expanded(
+            Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    title,
-                    style: TextStyle(
+                    poseLabel,
+                    style: const TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
                       color: AppColors.primary,
                     ),
                   ),
-                  SizedBox(height: 2),
+                  const SizedBox(height: 2),
                   Text(
-                    subtitle,
-                    style: TextStyle(
+                    pose.subtitle,
+                    style: const TextStyle(
                       fontSize: 12,
                       color: AppColors.textSecondary,
                     ),
@@ -362,6 +461,13 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
   // ── Capture button ────────────────────────────────────────────────────────
 
   Widget _buildCaptureButton() {
+    final isLast = _currentPoseIndex >= _poses.length - 1;
+    final buttonLabel = _capturing
+        ? 'Mengambil sampel…'
+        : isLast
+            ? 'Ambil & Simpan'
+            : 'Ambil Foto (${_currentPoseIndex + 1}/${_poses.length})';
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: SizedBox(
@@ -380,7 +486,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
                 )
               : const Icon(Icons.camera_alt_rounded, size: 20),
           label: Text(
-            _capturing ? 'Mengambil sampel…' : 'Ambil Foto',
+            buttonLabel,
             style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
           ),
           style: ElevatedButton.styleFrom(
@@ -448,9 +554,10 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 8),
-            const Text(
-              'Data wajah Anda telah disimpan dengan aman.\nAnda sekarang dapat menggunakan absensi wajah.',
-              style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+            Text(
+              '${_poses.length} pose wajah telah disimpan dengan aman.\n'
+              'Anda sekarang dapat menggunakan absensi wajah.',
+              style: const TextStyle(fontSize: 13, color: AppColors.textSecondary),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 32),

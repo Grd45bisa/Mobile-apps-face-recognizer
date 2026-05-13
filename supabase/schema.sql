@@ -313,9 +313,10 @@ CREATE TRIGGER active_timers_updated_at
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS face_embeddings (
-  employee_id  UUID PRIMARY KEY REFERENCES profiles(id) ON DELETE CASCADE,
-  embedding    TEXT NOT NULL,
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  employee_id      UUID PRIMARY KEY REFERENCES profiles(id) ON DELETE CASCADE,
+  embedding        TEXT NOT NULL,
+  face_enrollment_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 ALTER TABLE face_embeddings ENABLE ROW LEVEL SECURITY;

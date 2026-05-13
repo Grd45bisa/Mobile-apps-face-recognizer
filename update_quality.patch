@@ -1,0 +1,44 @@
+--- lib/shared/services/face/face_recognition_service_native.dart
++++ lib/shared/services/face/face_recognition_service_native.dart
+@@ -21,6 +21,13 @@
+   });
+ }
+ 
++/// Exception thrown when a frame fails the quality filter check.
++class QualityFilterException implements Exception {
++  final String reason;
++  const QualityFilterException(this.reason);
++  @override
++  String toString() => reason;
++}
++
+ /// SFace pipeline:
+ ///   Camera frame → MLKit detection → alignment → crop 112×112 → TFLite → embedding 128-dim L2-normalized
+ ///   Matching: cosine similarity (primary) + euclidean distance (debug)
+@@ -64,6 +71,11 @@
+   /// Used by enrollment (high-res JPEG) and attendance still-capture fallback.
+   Future<List<double>?> extractEmbedding(img.Image fullImage, Face face) async {
+     if (!_initialized) await init();
++    
++    final quality = FaceQualityFilter.evaluate(fullImage, face);
++    if (!quality.accepted) {
++      throw QualityFilterException(quality.rejectReason ?? 'Kualitas wajah buruk');
++    }
++
+     final cropped = cropFace(fullImage, face);
+     if (cropped == null) return null;
+     return extractEmbeddingFromCrop(cropped);
+@@ -111,6 +123,12 @@
+   }) async {
+     if (!_initialized) await init();
+ 
++    final quality = FaceQualityFilter.evaluateFast(face, width, height);
++    if (!quality.accepted) {
++      // ignore: avoid_print
++      print('[FaceRec] Rejected NV21: ${quality.rejectReason}');
++      throw QualityFilterException(quality.rejectReason ?? 'Kualitas wajah buruk');
++    }
++
+     // Compute the padded crop region in the original (pre-rotation) NV21 space.
+     // We decode only this region instead of the full multi-megapixel frame.
+     final box = face.boundingBox;

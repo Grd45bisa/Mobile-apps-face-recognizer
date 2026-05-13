@@ -1,0 +1,102 @@
+--- lib/features/enrollment/presentation/enrollment_screen_native.dart
++++ lib/features/enrollment/presentation/enrollment_screen_native.dart
+@@ -21,6 +21,17 @@
+ class _EnrollmentScreenState extends State<EnrollmentScreen>
+     with WidgetsBindingObserver {
+   CameraController? _camCtrl;
++  
++  final List<String> _poseInstructions = [
++    'Tatap lurus ke depan',
++    'Tengok sedikit ke kiri',
++    'Tengok sedikit ke kanan',
++    'Wajah dengan ekspresi netral',
++    'Tersenyum',
++  ];
++  
++  int _currentPoseIndex = 0;
++  final List<List<double>> _capturedEmbeddings = [];
+   _EnrollStep _step = _EnrollStep.capture;
+   String? _errorMsg;
+ 
+@@ -95,8 +106,6 @@
+ 
+   // ── Multi-frame capture ───────────────────────────────────────────────────
+ 
+-  /// Tap "Ambil Foto" -> ambil satu foto, crop wajah, simpan satu embedding.
+-  /// filter kualitas tiap frame, simpan embedding dengan skor tertinggi.
+   Future<void> _capture() async {
+     if (_capturing || _camCtrl == null) return;
+     setState(() => _capturing = true);
+@@ -125,7 +134,16 @@
+         return;
+       }
+ 
+-      await _finalize(embedding);
++      _capturedEmbeddings.add(embedding);
++      
++      if (_currentPoseIndex < _poseInstructions.length - 1) {
++        setState(() {
++          _currentPoseIndex++;
++          _capturing = false;
++        });
++      } else {
++        await _finalize(_capturedEmbeddings);
++      }
+     } on DuplicateFaceException {
+       if (!mounted) return;
+       setState(() {
+@@ -145,7 +163,7 @@
+     }
+   }
+ 
+-  Future<void> _finalize(List<double> embedding) async {
++  Future<void> _finalize(List<List<double>> embeddings) async {
+     if (!mounted) return;
+     setState(() {
+       _step = _EnrollStep.processing;
+@@ -156,7 +174,7 @@
+       final uid = AuthService.instance.currentUserId;
+       if (uid == null) throw Exception('Sesi tidak ditemukan');
+ 
+-      await EmbeddingSyncService.instance.saveEmbedding(uid, embedding);
++      await EmbeddingSyncService.instance.saveEmbeddings(uid, embeddings);
+ 
+       if (!mounted) return;
+       setState(() => _step = _EnrollStep.done);
+@@ -182,6 +200,8 @@
+   void _restart() {
+     setState(() {
+       _step = _EnrollStep.capture;
++      _currentPoseIndex = 0;
++      _capturedEmbeddings.clear();
+       _errorMsg = null;
+       _capturing = false;
+     });
+@@ -257,9 +277,15 @@
+   // ── Instruction card ──────────────────────────────────────────────────────
+ 
+   Widget _buildInstruction() {
+-    const title = 'Hadapkan wajah ke kamera';
+-    const subtitle =
+-        'Ambil satu foto wajah yang jelas, seperti sistem referensi.';
++    final title = 'Pose ${_currentPoseIndex + 1} dari ${_poseInstructions.length}';
++    final subtitle = _poseInstructions[_currentPoseIndex];
+     const icon = Icons.face_rounded;
+ 
+     return Padding(
+@@ -274,7 +300,7 @@
+           children: [
+             Icon(icon, color: AppColors.primary, size: 28),
+             const SizedBox(width: 12),
+-            const Expanded(
++            Expanded(
+               child: Column(
+                 crossAxisAlignment: CrossAxisAlignment.start,
+                 children: [
+@@ -287,7 +313,7 @@
+                     ),
+                   ),
+                   SizedBox(height: 2),
+                   Text(
+                     subtitle,
+                     style: TextStyle(
