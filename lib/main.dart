@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'features/auth/presentation/reset_password_screen.dart';
 import 'features/auth/presentation/splash_screen.dart';
@@ -13,6 +14,10 @@ import 'shared/theme/app_theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+    DeviceOrientation.portraitDown,
+  ]);
   await SupabaseClientService.initialize();
   await NotificationService.instance.init();
   runApp(const PresensiaApp());
