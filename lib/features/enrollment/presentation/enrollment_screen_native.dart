@@ -1,51 +1,75 @@
 import 'dart:async';
 import 'dart:io';
+
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
-import 'package:image/image.dart' as img;
+
 import '../../../shared/services/auth_service.dart';
-import '../../../shared/services/face/face_recognition_service.dart';
 import '../../../shared/services/face/embedding_sync_service.dart';
+import '../../../shared/services/face/face_quality_filter.dart';
+import '../../../shared/services/face/face_recognition_service.dart';
+import '../../../shared/services/screen_brightness_service.dart';
 import '../../../shared/theme/app_colors.dart';
 
 enum _EnrollStep { capture, processing, done, error }
 
-/// Pose definitions for multi-pose enrollment.
-/// Each entry is a (label, subtitle, icon) tuple shown in the instruction card.
-class _PoseDef {
-  const _PoseDef(this.label, this.subtitle, this.icon);
+enum _EnrollStage { center, left, right, blink }
+
+class _StageDef {
+  const _StageDef(this.label, this.subtitle, this.icon);
+
   final String label;
   final String subtitle;
   final IconData icon;
 }
 
-const List<_PoseDef> _poses = [
-  _PoseDef(
-    'Tatap lurus ke depan',
-    'Posisi netral – hadapkan wajah tepat ke kamera.',
+class _FrameCandidate {
+  const _FrameCandidate({
+    required this.nv21Bytes,
+    required this.rawWidth,
+    required this.rawHeight,
+    required this.rotation,
+    required this.face,
+    required this.qualityScore,
+  });
+
+  final Uint8List nv21Bytes;
+  final int rawWidth;
+  final int rawHeight;
+  final InputImageRotation rotation;
+  final Face face;
+  final double qualityScore;
+}
+
+const Map<_EnrollStage, _StageDef> _stageDefs = {
+  _EnrollStage.center: _StageDef(
+    'Tatap lurus',
+    'Hadapkan wajah tepat ke kamera. Sistem akan mengambil sampel otomatis.',
     Icons.face_rounded,
   ),
-  _PoseDef(
-    'Tengok sedikit ke kiri',
-    'Putar kepala ±15° ke kiri sambil tetap melihat layar.',
+  _EnrollStage.left: _StageDef(
+    'Tengok kiri sedikit',
+    'Putar kepala sedikit ke kiri, jangan terlalu jauh.',
     Icons.rotate_left_rounded,
   ),
-  _PoseDef(
-    'Tengok sedikit ke kanan',
-    'Putar kepala ±15° ke kanan sambil tetap melihat layar.',
+  _EnrollStage.right: _StageDef(
+    'Tengok kanan sedikit',
+    'Putar kepala sedikit ke kanan, jangan terlalu jauh.',
     Icons.rotate_right_rounded,
   ),
-  _PoseDef(
-    'Ekspresi netral',
-    'Hadap lurus – relakskan otot wajah, mulut tertutup.',
-    Icons.sentiment_neutral_rounded,
+  _EnrollStage.blink: _StageDef(
+    'Kedipkan mata 2x',
+    'Validasi bahwa pendaftaran dilakukan oleh manusia secara langsung.',
+    Icons.visibility_rounded,
   ),
-  _PoseDef(
-    'Ekspresi senyum',
-    'Hadap lurus – tersenyumlah secara alami.',
-    Icons.sentiment_satisfied_alt_rounded,
-  ),
+};
+
+const List<_EnrollStage> _scanStages = [
+  _EnrollStage.center,
+  _EnrollStage.left,
+  _EnrollStage.right,
 ];
 
 class EnrollmentScreen extends StatefulWidget {
@@ -57,37 +81,66 @@ class EnrollmentScreen extends StatefulWidget {
 
 class _EnrollmentScreenState extends State<EnrollmentScreen>
     with WidgetsBindingObserver {
+  static const int _samplesPerStage = 3;
+  static const int _targetEmbeddingCount = _samplesPerStage * 3;
+  static const Duration _frameThrottle = Duration(milliseconds: 260);
+  static const Duration _stageSettleDelay = Duration(milliseconds: 650);
+
   CameraController? _camCtrl;
   _EnrollStep _step = _EnrollStep.capture;
+  _EnrollStage _stage = _EnrollStage.center;
   String? _errorMsg;
 
   final _detector = FaceDetector(
-    options: FaceDetectorOptions(performanceMode: FaceDetectorMode.accurate),
+    options: FaceDetectorOptions(
+      performanceMode: FaceDetectorMode.accurate,
+      enableClassification: true,
+      enableLandmarks: true,
+      enableTracking: true,
+    ),
   );
 
-  bool _capturing = false;
+  final Map<_EnrollStage, List<_FrameCandidate>> _samples = {
+    for (final stage in _scanStages) stage: <_FrameCandidate>[],
+  };
+
   bool _disposed = false;
+  bool _processingFrame = false;
+  bool _stageChanging = false;
+  bool _eyesPreviouslyClosed = false;
+  int _blinkCount = 0;
+  DateTime _lastFrameAt = DateTime(0);
+  String _scanHint = 'Arahkan wajah ke kamera';
 
-  /// Index of the pose currently being captured (0–4).
-  int _currentPoseIndex = 0;
+  int get _collectedSamples {
+    return _scanStages.fold<int>(
+      0,
+      (sum, stage) => sum + (_samples[stage]?.length ?? 0),
+    );
+  }
 
-  /// Accumulated embeddings – one per captured pose.
-  final List<List<double>> _capturedEmbeddings = [];
+  int get _currentStageSamples => _samples[_stage]?.length ?? 0;
+
+  bool get _needsPoseSamples => _scanStages.contains(_stage);
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    unawaited(_initCamera());
+    unawaited(ScreenBrightnessService.instance.acquireMax());
     unawaited(_initFaceRecognition());
+    unawaited(_initCamera());
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.inactive) {
+      unawaited(_stopImageStream());
       _camCtrl?.dispose();
       _camCtrl = null;
+      unawaited(ScreenBrightnessService.instance.releaseMax());
     } else if (state == AppLifecycleState.resumed) {
+      unawaited(ScreenBrightnessService.instance.acquireMax());
       unawaited(_initCamera());
     }
   }
@@ -120,17 +173,19 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
 
       final ctrl = CameraController(
         front,
-        ResolutionPreset.high,
+        ResolutionPreset.medium,
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.jpeg,
+        imageFormatGroup: Platform.isAndroid
+            ? ImageFormatGroup.nv21
+            : ImageFormatGroup.bgra8888,
       );
+
       await ctrl.initialize();
       if (!mounted || _disposed) {
         await ctrl.dispose();
         return;
       }
 
-      // Gunakan auto exposure dan auto focus.
       try {
         await ctrl.setExposureMode(ExposureMode.auto);
         await ctrl.setExposureOffset(0.0);
@@ -140,6 +195,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       } catch (_) {}
 
       setState(() => _camCtrl = ctrl);
+      unawaited(_startImageStream());
     } catch (_) {
       if (!mounted || _disposed) return;
       setState(() {
@@ -147,118 +203,271 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
             'Gagal membuka kamera. Pastikan izin kamera aktif, lalu coba lagi.';
         _step = _EnrollStep.error;
       });
-      return;
     }
   }
 
   @override
   void dispose() {
     _disposed = true;
+    unawaited(_stopImageStream());
     WidgetsBinding.instance.removeObserver(this);
     _detector.close();
     _camCtrl?.dispose();
     FaceRecognitionService.instance.dispose();
+    unawaited(ScreenBrightnessService.instance.releaseMax());
     super.dispose();
   }
 
-  // ── Multi-pose capture ────────────────────────────────────────────────────
-
-  /// Capture a single pose frame, extract its embedding, advance the pose
-  /// counter. After all [_poses] are captured, call [_finalize].
-  Future<void> _capture() async {
-    if (_capturing || _camCtrl == null) return;
-    setState(() => _capturing = true);
+  Future<void> _startImageStream() async {
+    final ctrl = _camCtrl;
+    if (ctrl == null ||
+        !ctrl.value.isInitialized ||
+        ctrl.value.isStreamingImages ||
+        _disposed ||
+        _step != _EnrollStep.capture) {
+      return;
+    }
 
     try {
-      final xFile = await _camCtrl!.takePicture();
-      final bytes = await File(xFile.path).readAsBytes();
-      final fullImage = img.decodeImage(bytes);
-      if (fullImage == null) {
-        _showSnack('Gagal membaca foto. Coba lagi.');
+      await ctrl.startImageStream(_onCameraFrame);
+    } catch (_) {}
+  }
+
+  Future<void> _stopImageStream() async {
+    final ctrl = _camCtrl;
+    if (ctrl == null ||
+        !ctrl.value.isInitialized ||
+        !ctrl.value.isStreamingImages) {
+      return;
+    }
+
+    try {
+      await ctrl.stopImageStream();
+    } catch (_) {}
+  }
+
+  Future<void> _onCameraFrame(CameraImage image) async {
+    if (_processingFrame ||
+        _stageChanging ||
+        _disposed ||
+        _step != _EnrollStep.capture) {
+      return;
+    }
+
+    final now = DateTime.now();
+    if (now.difference(_lastFrameAt) < _frameThrottle) return;
+    _lastFrameAt = now;
+    _processingFrame = true;
+
+    try {
+      if (!Platform.isAndroid) {
+        _setHint('Live enrollment saat ini dioptimalkan untuk Android.');
         return;
       }
 
-      final inputImage = InputImage.fromFilePath(xFile.path);
+      final inputImage = _buildInputImage(image);
+      final rotation = _currentRotation();
+      if (inputImage == null || rotation == null) return;
+
       final faces = await _detector.processImage(inputImage);
+      if (!mounted || _disposed || _step != _EnrollStep.capture) return;
+
       if (faces.isEmpty) {
-        _showSnack('Wajah tidak terdeteksi. Coba lagi.');
+        _setHint('Arahkan wajah ke kamera');
         return;
       }
       if (faces.length > 1) {
-        _showSnack(
-          'Terdeteksi lebih dari satu wajah. Pastikan hanya pemilik akun di kamera.',
-        );
+        _setHint('Pastikan hanya satu wajah di kamera');
         return;
       }
 
-      final embedding = await FaceRecognitionService.instance.extractEmbedding(
-        fullImage,
-        faces.first,
+      final face = faces.first;
+      final quality = FaceQualityFilter.evaluateFast(
+        face,
+        image.width,
+        image.height,
       );
-      if (embedding == null) {
-        _showSnack('Wajah tidak terbaca dengan jelas. Coba lagi.');
+      if (!quality.accepted) {
+        _setHint(quality.rejectReason ?? 'Posisikan wajah dengan jelas');
         return;
       }
 
-      _capturedEmbeddings.add(embedding);
-
-      final isLast = _currentPoseIndex >= _poses.length - 1;
-      if (isLast) {
-        // All poses captured – save them all.
-        await _finalize(_capturedEmbeddings);
+      if (_needsPoseSamples) {
+        await _handlePoseFrame(image, rotation, face, quality.score);
       } else {
-        // Advance to the next pose.
-        setState(() {
-          _currentPoseIndex++;
-          _capturing = false;
-        });
-        _showSnack(
-          'Pose $_currentPoseIndex berhasil! Sekarang: ${_poses[_currentPoseIndex].label}.',
+        await _handleBlinkFrame(face);
+      }
+    } catch (_) {
+      // Ignore per-frame errors so the camera preview stays smooth.
+    } finally {
+      _processingFrame = false;
+    }
+  }
+
+  Future<void> _handlePoseFrame(
+    CameraImage image,
+    InputImageRotation rotation,
+    Face face,
+    double qualityScore,
+  ) async {
+    if (!_poseMatchesStage(face, _stage)) {
+      _setHint(_poseHint(_stage, face));
+      return;
+    }
+
+    final list = _samples[_stage]!;
+    if (list.length >= _samplesPerStage) return;
+
+    list.add(
+      _FrameCandidate(
+        nv21Bytes: Uint8List.fromList(image.planes.first.bytes),
+        rawWidth: image.width,
+        rawHeight: image.height,
+        rotation: rotation,
+        face: face,
+        qualityScore: qualityScore,
+      ),
+    );
+
+    _setHint('Sampel ${list.length} / $_samplesPerStage tersimpan');
+    setState(() {});
+
+    if (list.length >= _samplesPerStage) {
+      await _advanceStage();
+    }
+  }
+
+  Future<void> _handleBlinkFrame(Face face) async {
+    if (face.leftEyeOpenProbability == null ||
+        face.rightEyeOpenProbability == null) {
+      _setHint('Hadapkan wajah ke depan lalu kedipkan mata');
+      return;
+    }
+
+    final leftOpen = face.leftEyeOpenProbability! > 0.5;
+    final rightOpen = face.rightEyeOpenProbability! > 0.5;
+    final bothClosed = !leftOpen && !rightOpen;
+
+    if (bothClosed) {
+      _eyesPreviouslyClosed = true;
+    } else if (_eyesPreviouslyClosed && leftOpen && rightOpen) {
+      _blinkCount++;
+      _eyesPreviouslyClosed = false;
+    }
+
+    if (_blinkCount >= 2) {
+      _setHint('Liveness berhasil. Mengoptimalkan data wajah...');
+      await _stopImageStream();
+      await _finalize();
+      return;
+    }
+
+    _setHint(
+      _blinkCount == 0 ? 'Kedipkan mata 2x' : 'Kedipan: $_blinkCount / 2',
+    );
+  }
+
+  Future<void> _advanceStage() async {
+    if (_stageChanging) return;
+    _stageChanging = true;
+
+    final index = _scanStages.indexOf(_stage);
+    final next = index >= 0 && index < _scanStages.length - 1
+        ? _scanStages[index + 1]
+        : _EnrollStage.blink;
+
+    if (!mounted || _disposed) return;
+    setState(() {
+      _stage = next;
+      _scanHint = _stage == _EnrollStage.blink
+          ? 'Kedipkan mata 2x'
+          : _stageDefs[_stage]!.subtitle;
+    });
+
+    await Future.delayed(_stageSettleDelay);
+    _stageChanging = false;
+  }
+
+  bool _poseMatchesStage(Face face, _EnrollStage stage) {
+    final yaw = face.headEulerAngleY;
+    final pitch = face.headEulerAngleX?.abs();
+    final roll = face.headEulerAngleZ?.abs();
+
+    if (yaw == null) return false;
+    if (pitch != null && pitch > 18) return false;
+    if (roll != null && roll > 14) return false;
+
+    switch (stage) {
+      case _EnrollStage.center:
+        return yaw.abs() <= 8;
+      case _EnrollStage.left:
+        return yaw <= -9 && yaw >= -28;
+      case _EnrollStage.right:
+        return yaw >= 9 && yaw <= 28;
+      case _EnrollStage.blink:
+        return true;
+    }
+  }
+
+  String _poseHint(_EnrollStage stage, Face face) {
+    final yaw = face.headEulerAngleY ?? 0;
+    switch (stage) {
+      case _EnrollStage.center:
+        return yaw.abs() <= 8 ? 'Tahan posisi...' : 'Hadapkan wajah lurus';
+      case _EnrollStage.left:
+        return 'Tengok kiri sedikit';
+      case _EnrollStage.right:
+        return 'Tengok kanan sedikit';
+      case _EnrollStage.blink:
+        return 'Kedipkan mata 2x';
+    }
+  }
+
+  Future<void> _finalize() async {
+    if (!mounted || _disposed) return;
+    setState(() => _step = _EnrollStep.processing);
+
+    try {
+      final uid = AuthService.instance.currentUserId;
+      if (uid == null) throw Exception('Sesi tidak ditemukan');
+
+      final candidates = _orderedCandidates();
+      if (candidates.length < _targetEmbeddingCount) {
+        throw Exception('Sampel wajah belum lengkap');
+      }
+
+      final embeddings = <List<double>>[];
+      for (final candidate in candidates.take(_targetEmbeddingCount)) {
+        final embedding = await FaceRecognitionService.instance
+            .extractEmbeddingFromNv21(
+              nv21Bytes: candidate.nv21Bytes,
+              width: candidate.rawWidth,
+              height: candidate.rawHeight,
+              rotation: candidate.rotation,
+              face: candidate.face,
+            );
+        if (embedding != null) embeddings.add(embedding);
+      }
+
+      if (embeddings.length < _targetEmbeddingCount) {
+        throw Exception(
+          'Data wajah belum cukup jelas. Coba ulangi pendaftaran.',
         );
       }
+
+      await EmbeddingSyncService.instance.saveEmbeddings(uid, embeddings);
+
+      if (!mounted || _disposed) return;
+      setState(() => _step = _EnrollStep.done);
     } on DuplicateFaceException {
-      if (!mounted) return;
+      if (!mounted || _disposed) return;
       setState(() {
         _errorMsg =
             'Wajah ini sudah terdaftar di akun lain. Gunakan wajah pemilik akun ini.';
         _step = _EnrollStep.error;
       });
     } catch (e) {
-      if (!mounted) return;
-      // Handle conditionally exported exception via its type string
-      if (e.runtimeType.toString() == 'QualityFilterException') {
-        _showSnack((e as dynamic).reason as String);
-      } else {
-        setState(() {
-          _errorMsg = 'Gagal mendaftarkan wajah: ${e.toString()}';
-          _step = _EnrollStep.error;
-        });
-      }
-    } finally {
-      if (mounted && _step == _EnrollStep.capture && _capturing) {
-        setState(() => _capturing = false);
-      }
-    }
-  }
-
-  /// Persist all captured embeddings to SQLite + Supabase.
-  Future<void> _finalize(List<List<double>> embeddings) async {
-    if (!mounted) return;
-    setState(() {
-      _step = _EnrollStep.processing;
-      _capturing = false;
-    });
-
-    try {
-      final uid = AuthService.instance.currentUserId;
-      if (uid == null) throw Exception('Sesi tidak ditemukan');
-
-      await EmbeddingSyncService.instance.saveEmbeddings(uid, embeddings);
-
-      if (!mounted) return;
-      setState(() => _step = _EnrollStep.done);
-    } catch (e) {
-      if (!mounted) return;
+      if (!mounted || _disposed) return;
       final rawError = e.toString();
       final friendlyError = rawError.contains('failed precondition')
           ? 'Gagal menyimpan data wajah ke server. Kemungkinan schema Supabase belum sesuai atau fungsi duplicate-check belum terpasang.'
@@ -270,33 +479,97 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     }
   }
 
-  void _showSnack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        backgroundColor: AppColors.warning,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+  List<_FrameCandidate> _orderedCandidates() {
+    final selected = <_FrameCandidate>[];
+    for (final stage in _scanStages) {
+      final stageSamples = List<_FrameCandidate>.from(_samples[stage] ?? []);
+      stageSamples.sort((a, b) => b.qualityScore.compareTo(a.qualityScore));
+      selected.addAll(stageSamples.take(_samplesPerStage));
+    }
+    return selected;
+  }
+
+  InputImage? _buildInputImage(CameraImage image) {
+    final rotation = _currentRotation();
+    if (rotation == null) return null;
+
+    final format = Platform.isAndroid
+        ? InputImageFormat.nv21
+        : InputImageFormat.bgra8888;
+    final plane = image.planes.first;
+
+    return InputImage.fromBytes(
+      bytes: plane.bytes,
+      metadata: InputImageMetadata(
+        size: Size(image.width.toDouble(), image.height.toDouble()),
+        rotation: rotation,
+        format: format,
+        bytesPerRow: plane.bytesPerRow,
       ),
     );
   }
 
+  InputImageRotation? _currentRotation() {
+    final ctrl = _camCtrl;
+    if (ctrl == null) return null;
+
+    if (Platform.isIOS) {
+      return InputImageRotationValue.fromRawValue(
+        ctrl.description.sensorOrientation,
+      );
+    }
+
+    int rotationCompensation = ctrl.description.sensorOrientation;
+    final deviceOrientation = ctrl.value.deviceOrientation;
+    late final int deviceRot;
+    switch (deviceOrientation) {
+      case DeviceOrientation.portraitUp:
+        deviceRot = 0;
+      case DeviceOrientation.landscapeLeft:
+        deviceRot = 90;
+      case DeviceOrientation.portraitDown:
+        deviceRot = 180;
+      case DeviceOrientation.landscapeRight:
+        deviceRot = 270;
+    }
+
+    if (ctrl.description.lensDirection == CameraLensDirection.front) {
+      rotationCompensation =
+          (ctrl.description.sensorOrientation + deviceRot) % 360;
+    } else {
+      rotationCompensation =
+          (ctrl.description.sensorOrientation - deviceRot + 360) % 360;
+    }
+
+    return InputImageRotationValue.fromRawValue(rotationCompensation);
+  }
+
+  void _setHint(String hint) {
+    if (!mounted || _disposed || _scanHint == hint) return;
+    setState(() => _scanHint = hint);
+  }
+
   void _restart() {
+    for (final stage in _scanStages) {
+      _samples[stage]!.clear();
+    }
     setState(() {
       _step = _EnrollStep.capture;
-      _currentPoseIndex = 0;
-      _capturedEmbeddings.clear();
+      _stage = _EnrollStage.center;
       _errorMsg = null;
-      _capturing = false;
+      _processingFrame = false;
+      _stageChanging = false;
+      _eyesPreviouslyClosed = false;
+      _blinkCount = 0;
+      _scanHint = 'Arahkan wajah ke kamera';
     });
     if (_camCtrl == null || !_camCtrl!.value.isInitialized) {
       unawaited(_initCamera());
+    } else {
+      unawaited(_startImageStream());
     }
     unawaited(_initFaceRecognition());
   }
-
-  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -338,7 +611,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
         return _buildDone();
       case _EnrollStep.error:
         return _buildError();
-      default:
+      case _EnrollStep.capture:
         return _buildCaptureStep();
     }
   }
@@ -347,32 +620,33 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     return Column(
       children: [
         const SizedBox(height: 16),
-        _buildPoseProgress(),
+        _buildStageProgress(),
         const SizedBox(height: 10),
         _buildInstruction(),
         const SizedBox(height: 12),
         Expanded(child: _buildCameraPreview()),
         const SizedBox(height: 12),
-        if (_capturing) _buildSamplingProgress(),
-        const SizedBox(height: 8),
-        _buildCaptureButton(),
+        _buildScanStatus(),
         const SizedBox(height: 24),
       ],
     );
   }
 
-  // ── Pose progress indicator ───────────────────────────────────────────────
+  Widget _buildStageProgress() {
+    final total = _scanStages.length + 1;
+    final activeIndex = _stage == _EnrollStage.blink
+        ? _scanStages.length
+        : _scanStages.indexOf(_stage);
 
-  Widget _buildPoseProgress() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Row(
-        children: List.generate(_poses.length, (i) {
-          final done = i < _currentPoseIndex;
-          final active = i == _currentPoseIndex;
+        children: List.generate(total, (i) {
+          final done = i < activeIndex;
+          final active = i == activeIndex;
           return Expanded(
             child: Padding(
-              padding: EdgeInsets.only(right: i < _poses.length - 1 ? 6 : 0),
+              padding: EdgeInsets.only(right: i < total - 1 ? 6 : 0),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 300),
                 height: 6,
@@ -392,12 +666,11 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     );
   }
 
-  // ── Instruction card ──────────────────────────────────────────────────────
-
   Widget _buildInstruction() {
-    final pose = _poses[_currentPoseIndex];
-    final poseLabel =
-        'Pose ${_currentPoseIndex + 1} / ${_poses.length} – ${pose.label}';
+    final stage = _stageDefs[_stage]!;
+    final stageNumber = _stage == _EnrollStage.blink
+        ? _scanStages.length + 1
+        : _scanStages.indexOf(_stage) + 1;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -409,14 +682,14 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
         ),
         child: Row(
           children: [
-            Icon(pose.icon, color: AppColors.primary, size: 28),
+            Icon(stage.icon, color: AppColors.primary, size: 28),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    poseLabel,
+                    'Langkah $stageNumber / 4 - ${stage.label}',
                     style: const TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.bold,
@@ -425,7 +698,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    pose.subtitle,
+                    stage.subtitle,
                     style: const TextStyle(
                       fontSize: 12,
                       color: AppColors.textSecondary,
@@ -439,33 +712,6 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       ),
     );
   }
-
-  // ── Sampling progress ─────────────────────────────────────────────────────
-
-  Widget _buildSamplingProgress() {
-    return const Padding(
-      padding: EdgeInsets.symmetric(horizontal: 20),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 16,
-            height: 16,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: AppColors.primary,
-            ),
-          ),
-          SizedBox(width: 10),
-          Text(
-            'Menganalisis wajah...',
-            style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ── Camera preview ────────────────────────────────────────────────────────
 
   Widget _buildCameraPreview() {
     final ctrl = _camCtrl;
@@ -490,57 +736,88 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
                 child: CameraPreview(ctrl),
               ),
             ),
+            Positioned(
+              left: 14,
+              right: 14,
+              bottom: 14,
+              child: _buildLiveBadge(),
+            ),
           ],
         ),
       ),
     );
   }
 
-  // ── Capture button ────────────────────────────────────────────────────────
-
-  Widget _buildCaptureButton() {
-    final isLast = _currentPoseIndex >= _poses.length - 1;
-    final buttonLabel = _capturing
-        ? 'Mengambil sampel…'
-        : isLast
-        ? 'Ambil & Simpan'
-        : 'Ambil Foto (${_currentPoseIndex + 1}/${_poses.length})';
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: SizedBox(
-        width: double.infinity,
-        height: 52,
-        child: ElevatedButton.icon(
-          onPressed: _capturing ? null : _capture,
-          icon: _capturing
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: Colors.white,
-                  ),
-                )
-              : const Icon(Icons.camera_alt_rounded, size: 20),
-          label: Text(
-            buttonLabel,
-            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
-          ),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: AppColors.primary,
-            foregroundColor: Colors.white,
-            elevation: 0,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
+  Widget _buildLiveBadge() {
+    final done = _stage == _EnrollStage.blink && _blinkCount >= 2;
+    return Align(
+      alignment: Alignment.center,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: done
+              ? AppColors.success.withValues(alpha: 0.90)
+              : Colors.black.withValues(alpha: 0.68),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              done ? Icons.verified_user_rounded : _stageDefs[_stage]!.icon,
+              size: 17,
+              color: Colors.white,
             ),
-          ),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                _scanHint,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 
-  // ── Processing / Done / Error ─────────────────────────────────────────────
+  Widget _buildScanStatus() {
+    final label = _stage == _EnrollStage.blink
+        ? 'Kedipan $_blinkCount / 2'
+        : 'Sampel $_currentStageSamples / $_samplesPerStage';
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Row(
+        children: [
+          const SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: AppColors.primary,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '$label - Total $_collectedSamples / $_targetEmbeddingCount',
+              style: const TextStyle(
+                fontSize: 12,
+                color: AppColors.textSecondary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildProcessing() {
     return const Center(
@@ -550,11 +827,24 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
           CircularProgressIndicator(color: AppColors.primary),
           SizedBox(height: 20),
           Text(
-            'Menyimpan data wajah…',
+            'Mengoptimalkan data wajah...',
             style: TextStyle(
               fontSize: 15,
-              fontWeight: FontWeight.w600,
-              color: AppColors.textSecondary,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          SizedBox(height: 8),
+          Padding(
+            padding: EdgeInsets.symmetric(horizontal: 40),
+            child: Text(
+              'Aplikasi sedang membuat embedding dan menyimpannya ke perangkat serta Supabase.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 12,
+                height: 1.45,
+                color: AppColors.textSecondary,
+              ),
             ),
           ),
         ],
@@ -592,13 +882,10 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 8),
-            Text(
-              '${_poses.length} pose wajah telah disimpan dengan aman.\n'
+            const Text(
+              '9 sampel wajah terbaik telah disimpan dengan aman.\n'
               'Anda sekarang dapat menggunakan absensi wajah.',
-              style: const TextStyle(
-                fontSize: 13,
-                color: AppColors.textSecondary,
-              ),
+              style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 32),

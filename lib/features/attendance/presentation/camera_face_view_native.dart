@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
 import '../../../shared/services/face/face_quality_filter.dart';
+import '../../../shared/services/screen_brightness_service.dart';
 import '../../../shared/theme/app_colors.dart';
 
 enum CameraFaceState {
@@ -115,6 +116,7 @@ class CameraFaceViewState extends State<CameraFaceView>
   bool _scanning = false;
   bool _processingFrame = false;
   bool _disposed = false;
+  bool _brightnessLocked = false;
   List<Face> _visibleFaces = const [];
   Size? _visibleImageSize;
   InputImageRotation? _visibleRotation;
@@ -136,6 +138,7 @@ class CameraFaceViewState extends State<CameraFaceView>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     if (widget.active) {
+      _acquireBrightness();
       unawaited(_initCamera());
     } else {
       _state = CameraFaceState.ready;
@@ -146,10 +149,12 @@ class CameraFaceViewState extends State<CameraFaceView>
   void didUpdateWidget(CameraFaceView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.active && !oldWidget.active) {
+      _acquireBrightness();
       if (_controller == null) unawaited(_initCamera());
       return;
     }
     if (!widget.active && oldWidget.active) {
+      _releaseBrightness();
       unawaited(_releaseCamera());
       return;
     }
@@ -166,12 +171,26 @@ class CameraFaceViewState extends State<CameraFaceView>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final ctrl = _controller;
     if (state == AppLifecycleState.inactive) {
+      _releaseBrightness();
       if (ctrl != null && ctrl.value.isInitialized) {
         unawaited(_disposeController(ctrl));
       }
     } else if (state == AppLifecycleState.resumed && widget.active) {
+      _acquireBrightness();
       if (_controller == null) unawaited(_initCamera());
     }
+  }
+
+  void _acquireBrightness() {
+    if (_brightnessLocked) return;
+    _brightnessLocked = true;
+    unawaited(ScreenBrightnessService.instance.acquireMax());
+  }
+
+  void _releaseBrightness() {
+    if (!_brightnessLocked) return;
+    _brightnessLocked = false;
+    unawaited(ScreenBrightnessService.instance.releaseMax());
   }
 
   Future<void> _releaseCamera() async {
@@ -764,6 +783,7 @@ class CameraFaceViewState extends State<CameraFaceView>
     WidgetsBinding.instance.removeObserver(this);
     _faceDetector.close();
     _controller?.dispose();
+    _releaseBrightness();
     super.dispose();
   }
 
