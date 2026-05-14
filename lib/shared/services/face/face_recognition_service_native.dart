@@ -31,7 +31,7 @@ class QualityFilterException implements Exception {
 }
 
 /// SFace pipeline:
-///   Camera frame → MLKit detection → alignment → crop 112×112 → TFLite → L2-normalized embedding
+///   Camera frame → MLKit detection → alignment → model-size crop → TFLite → L2-normalized embedding
 ///   Matching: cosine similarity (primary) + euclidean distance (debug)
 class FaceRecognitionService {
   static final FaceRecognitionService instance = FaceRecognitionService._();
@@ -44,7 +44,7 @@ class FaceRecognitionService {
   // Tune this with real attendance samples if false accepts/rejects shift.
   static const double _cosineThreshold = 0.80;
 
-  static const int _inputSize = 112;
+  int _inputSize = 0;
   int _embeddingSize = 0;
 
   // ── Init ──────────────────────────────────────────────────────────────────
@@ -58,18 +58,29 @@ class FaceRecognitionService {
     print('[FaceRec] output shape: ${_interpreter!.getOutputTensor(0).shape}');
     _configureModelShape();
     _initialized = true;
+    try {
+      _validateInferenceOutput();
+    } catch (_) {
+      _initialized = false;
+      rethrow;
+    }
   }
 
   void _configureModelShape() {
     final inputShape = _interpreter!.getInputTensor(0).shape;
     if (inputShape.length != 4 ||
-        inputShape[1] != _inputSize ||
-        inputShape[2] != _inputSize ||
+        inputShape[0] != 1 ||
         inputShape[3] != 3) {
       throw StateError(
-        'Unexpected SFace input shape: $inputShape. Expected [1, 112, 112, 3].',
+        'Unexpected SFace input shape: $inputShape. Expected [1, H, W, 3].',
       );
     }
+    if (inputShape[1] != inputShape[2]) {
+      throw StateError(
+        'Non-square model input not supported: $inputShape.',
+      );
+    }
+    _inputSize = inputShape[1];
 
     final outputShape = _interpreter!.getOutputTensor(0).shape;
     if (outputShape.length != 2 ||
@@ -80,6 +91,29 @@ class FaceRecognitionService {
       );
     }
     _embeddingSize = outputShape[1];
+
+    // ignore: avoid_print
+    print(
+      '[FaceRec] Model loaded - input: [1, $_inputSize, $_inputSize, 3], '
+      'output: [1, $_embeddingSize]',
+    );
+  }
+
+  void _validateInferenceOutput() {
+    final blank = img.Image(width: _inputSize, height: _inputSize);
+    for (int y = 0; y < _inputSize; y++) {
+      for (int x = 0; x < _inputSize; x++) {
+        blank.setPixelRgb(x, y, 128, 128, 128);
+      }
+    }
+
+    final embedding = _runInference(blank);
+    if (embedding.length != _embeddingSize) {
+      throw StateError(
+        'SFace inference output length mismatch: ${embedding.length}. '
+        'Expected $_embeddingSize.',
+      );
+    }
   }
 
   Future<void> dispose() async {
@@ -188,6 +222,7 @@ class FaceRecognitionService {
         leY: leftEye?.position.y.toDouble(),
         reX: rightEye?.position.x.toDouble(),
         reY: rightEye?.position.y.toDouble(),
+        inputSize: _inputSize,
       ),
     );
 
@@ -197,7 +232,7 @@ class FaceRecognitionService {
 
   // ── Top-level function for compute() ──────────────────────────────────────
   // Runs in a background isolate: decode crop from NV21, apply rotation,
-  // then eye-anchor align (same pipeline as enrollment) → resize to 112×112.
+  // then eye-anchor align (same pipeline as enrollment) → resize to model input.
 
   static img.Image? _nv21CropToImage(_NV21CropParams p) {
     // 1. Decode only the padded bounding-box region from NV21.
@@ -310,18 +345,18 @@ class FaceRecognitionService {
         final h = cropSize.clamp(1, aligned.height - y);
         if (w >= 20 && h >= 20) {
           final face = img.copyCrop(aligned, x: x, y: y, width: w, height: h);
-          return img.copyResize(face, width: 112, height: 112);
+          return img.copyResize(face, width: p.inputSize, height: p.inputSize);
         }
       }
     }
 
     // 4. Fallback: just resize the rotated crop directly.
-    return img.copyResize(rotated, width: 112, height: 112);
+    return img.copyResize(rotated, width: p.inputSize, height: p.inputSize);
   }
 
   // ── Alignment & crop ──────────────────────────────────────────────────────
 
-  /// Align and crop the face to 112×112 for SFace inference.
+  /// Align and crop the face to the configured model input size for SFace inference.
   ///
   /// Strategy (eye-anchor):
   /// 1. If both eye landmarks are available, rotate the full image so the
@@ -331,13 +366,20 @@ class FaceRecognitionService {
   ///    distance changes — the #1 cause of embedding instability.
   /// 2. If landmarks are absent, fall back to the bounding-box crop with
   ///    40% padding (generous enough for SFace).
-  List<double> _runInference(img.Image face112) {
+  List<double> _runInference(img.Image faceImage) {
+    if (faceImage.width != _inputSize || faceImage.height != _inputSize) {
+      throw StateError(
+        'Unexpected SFace image size: ${faceImage.width}x${faceImage.height}. '
+        'Expected ${_inputSize}x$_inputSize.',
+      );
+    }
+
     // SFace: NHWC float32, RGB, normalized to [-1, 1]
     final Float32List flatInput = Float32List(_inputSize * _inputSize * 3);
     int idx = 0;
     for (int y = 0; y < _inputSize; y++) {
       for (int x = 0; x < _inputSize; x++) {
-        final p = face112.getPixel(x, y);
+        final p = faceImage.getPixel(x, y);
         flatInput[idx++] = (p.r.toDouble() - 127.5) / 127.5;
         flatInput[idx++] = (p.g.toDouble() - 127.5) / 127.5;
         flatInput[idx++] = (p.b.toDouble() - 127.5) / 127.5;
@@ -560,6 +602,7 @@ class _NV21CropParams {
   final int cropW;
   final int cropH;
   final InputImageRotation rotation;
+  final int inputSize;
   // Eye landmark positions in full-frame coordinates (nullable — fallback to bbox).
   final double? leX;
   final double? leY;
@@ -575,6 +618,7 @@ class _NV21CropParams {
     required this.cropW,
     required this.cropH,
     required this.rotation,
+    required this.inputSize,
     this.leX,
     this.leY,
     this.reX,
