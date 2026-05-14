@@ -70,6 +70,7 @@ class CameraFaceView extends StatefulWidget {
   final VoidCallback? onTimeout;
   final bool liveMode;
   final LiveFaceDetectionCallback? onLiveFaceDetection;
+  final bool enableLiveness;
 
   const CameraFaceView({
     super.key,
@@ -79,6 +80,7 @@ class CameraFaceView extends StatefulWidget {
     this.onTimeout,
     this.liveMode = false,
     this.onLiveFaceDetection,
+    this.enableLiveness = true,
   });
 
   @override

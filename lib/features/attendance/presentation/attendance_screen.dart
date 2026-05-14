@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -14,6 +15,20 @@ import '../../../shared/services/face/embedding_sync_service.dart';
 import '../../../shared/services/face/face_recognition_service.dart';
 import '../../enrollment/presentation/enrollment_screen.dart';
 import 'camera_face_view.dart';
+
+class _VerificationDecision {
+  const _VerificationDecision({
+    required this.matched,
+    required this.bestSimilarity,
+    required this.averageSimilarity,
+    required this.passCount,
+  });
+
+  final bool matched;
+  final double bestSimilarity;
+  final double averageSimilarity;
+  final int passCount;
+}
 
 class AttendanceScreen extends StatefulWidget {
   final bool isActive;
@@ -39,7 +54,14 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   double? _lastSimilarity;
   int _sampleAttempts = 0;
   double _bestSimilarity = -1.0;
-  static const int _maxVerificationSamples = 3;
+  final List<List<double>> _verificationEmbeddings = [];
+  static const int _maxVerificationSamples = 5;
+  static const int _maxVerificationCaptures = 10;
+  static const int _minPassingSamples = 4;
+  static const double _sampleAcceptThreshold = 0.87;
+  static const double _bestAcceptThreshold = 0.91;
+  static const double _averageAcceptThreshold = 0.88;
+  static const double _weakestAcceptedSampleThreshold = 0.82;
 
   DateTime get _today =>
       DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
@@ -102,6 +124,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   Future<void> _onFaceDetectedForAttendance({
     required img.Image fullImage,
+    required Uint8List? nv21Bytes,
+    required int rawWidth,
+    required int rawHeight,
+    required InputImageRotation rotation,
     required Face face,
   }) async {
     if (_processing || _isCheckedOut) return;
@@ -128,31 +154,53 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         return;
       }
 
-      final query = await FaceRecognitionService.instance.extractEmbedding(
-        fullImage,
-        face,
-      );
+      final query = nv21Bytes != null
+          ? await FaceRecognitionService.instance.extractEmbeddingFromNv21(
+              nv21Bytes: nv21Bytes,
+              width: rawWidth,
+              height: rawHeight,
+              rotation: rotation,
+              face: face,
+            )
+          : await FaceRecognitionService.instance.extractEmbedding(
+              fullImage,
+              face,
+            );
       if (query == null) {
-        _showFaceMatchFailed('Wajah tidak terbaca dengan jelas.');
+        if (_sampleAttempts < _maxVerificationCaptures &&
+            _verificationEmbeddings.length < _maxVerificationSamples) {
+          await _scanNextFaceSample();
+        } else {
+          _showFaceMatchFailed('Wajah tidak terbaca dengan jelas.');
+        }
         return;
       }
 
-      final result = FaceRecognitionService.instance.findBestMatchMulti(query, {
-        uid: stored,
-      });
-      _lastSimilarity = result.similarity;
+      _verificationEmbeddings.add(query);
 
-      if (!result.matched) {
-        _bestSimilarity = result.similarity > _bestSimilarity
-            ? result.similarity
-            : _bestSimilarity;
-        if (_sampleAttempts < _maxVerificationSamples) {
-          await _scanNextFaceSample();
-        } else {
-          _showFaceMatchFailed(
-            'Wajah tidak mirip dengan data terdaftar. Silakan konfirmasi ulang.',
-          );
-        }
+      if (_verificationEmbeddings.length < _maxVerificationSamples &&
+          _sampleAttempts < _maxVerificationCaptures) {
+        _lastSimilarity = _bestSimilarity >= 0 ? _bestSimilarity : null;
+        await _scanNextFaceSample();
+        return;
+      }
+
+      if (_verificationEmbeddings.length < _maxVerificationSamples) {
+        _showFaceMatchFailed('Wajah belum cukup jelas. Silakan ulangi.');
+        return;
+      }
+
+      final decision = _verifySamplesAgainstStored(
+        _verificationEmbeddings,
+        stored,
+      );
+      _lastSimilarity = decision.bestSimilarity;
+
+      if (!decision.matched) {
+        _bestSimilarity = decision.bestSimilarity;
+        _showFaceMatchFailed(
+          'Wajah tidak cukup konsisten dengan data terdaftar. Silakan ulangi.',
+        );
         return;
       }
 
@@ -162,7 +210,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       await _recordAttendance();
     } catch (e) {
       if (e is QualityFilterException) {
-        _showFaceMatchFailed(e.reason);
+        if (_sampleAttempts < _maxVerificationCaptures &&
+            _verificationEmbeddings.length < _maxVerificationSamples) {
+          await _scanNextFaceSample();
+        } else {
+          _showFaceMatchFailed(e.reason);
+        }
       } else {
         // ignore: avoid_print
         print('[Attendance] Error during face match: $e');
@@ -171,6 +224,56 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
   // ── Connectivity check ────────────────────────────────────────────────────
+
+  _VerificationDecision _verifySamplesAgainstStored(
+    List<List<double>> samples,
+    List<List<double>> stored,
+  ) {
+    final similarities = <double>[];
+
+    for (final sample in samples) {
+      double best = -1;
+      for (final enrolled in stored) {
+        final sim = FaceRecognitionService.cosineSimilarity(sample, enrolled);
+        if (sim > best) best = sim;
+      }
+      similarities.add(best.clamp(0.0, 1.0));
+    }
+
+    similarities.sort((a, b) => b.compareTo(a));
+    final best = similarities.isEmpty ? 0.0 : similarities.first;
+    final weakest = similarities.isEmpty ? 0.0 : similarities.last;
+    final passCount = similarities
+        .where((sim) => sim >= _sampleAcceptThreshold)
+        .length;
+    final topCount = similarities.length < _minPassingSamples
+        ? similarities.length
+        : _minPassingSamples;
+    final topAverage = topCount == 0
+        ? 0.0
+        : similarities.take(topCount).reduce((a, b) => a + b) / topCount;
+
+    final matched =
+        passCount >= _minPassingSamples &&
+        best >= _bestAcceptThreshold &&
+        topAverage >= _averageAcceptThreshold &&
+        weakest >= _weakestAcceptedSampleThreshold;
+
+    // ignore: avoid_print
+    print(
+      '[Attendance] verification sims=${similarities.map((s) => s.toStringAsFixed(4)).join(',')} '
+      'pass=$passCount/$_maxVerificationSamples avg=${topAverage.toStringAsFixed(4)} '
+      'best=${best.toStringAsFixed(4)} weakest=${weakest.toStringAsFixed(4)} '
+      'matched=$matched',
+    );
+
+    return _VerificationDecision(
+      matched: matched,
+      bestSimilarity: best,
+      averageSimilarity: topAverage,
+      passCount: passCount,
+    );
+  }
 
   Future<bool> _isOnline() async {
     final result = await Connectivity().checkConnectivity();
@@ -194,6 +297,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         _lastSimilarity = null;
         _sampleAttempts = 0;
         _bestSimilarity = -1.0;
+        _verificationEmbeddings.clear();
       });
       _cameraKey.currentState?.startScan();
     }
@@ -493,6 +597,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       _lastSimilarity = failed && _bestSimilarity >= 0 ? _bestSimilarity : null;
       _sampleAttempts = 0;
       _bestSimilarity = -1.0;
+      _verificationEmbeddings.clear();
     });
   }
 
@@ -663,10 +768,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       );
     }
     if (_checkingFace) {
-      final sample = _sampleAttempts.clamp(1, _maxVerificationSamples);
+      final sample = _verificationEmbeddings.length.clamp(
+        0,
+        _maxVerificationSamples,
+      );
       return (
         Icons.manage_search_rounded,
-        'Menganalisis wajah... ($sample/$_maxVerificationSamples)',
+        'Mengambil sampel wajah... ($sample/$_maxVerificationSamples)',
         AppColors.primary,
         AppColors.primaryLight,
       );
@@ -683,7 +791,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
     return (
       Icons.face_rounded,
-      'Tekan presensi → arahkan wajah → kedipkan mata 2x',
+      'Tekan presensi -> arahkan wajah -> tahan posisi',
       AppColors.textSecondary,
       AppColors.background,
     );
@@ -957,13 +1065,16 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             : CameraFaceView(
                 key: _cameraKey,
                 active: widget.isActive,
-                hint: 'Arahkan wajah ke kamera & kedipkan mata 2x',
+                hint: 'Arahkan wajah dan tahan posisi',
                 liveMode: false,
+                enableLiveness: false,
                 onTimeout: () {
                   if (!mounted) return;
                   _sampleAttempts++;
                   if (_sampleAttempts > 0 &&
-                      _sampleAttempts < _maxVerificationSamples) {
+                      _sampleAttempts < _maxVerificationCaptures &&
+                      _verificationEmbeddings.length <
+                          _maxVerificationSamples) {
                     unawaited(_scanNextFaceSample());
                     return;
                   }
@@ -982,6 +1093,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                       required face,
                     }) => _onFaceDetectedForAttendance(
                       fullImage: fullImage,
+                      nv21Bytes: nv21Bytes,
+                      rawWidth: rawWidth,
+                      rawHeight: rawHeight,
+                      rotation: rotation,
                       face: face,
                     ),
               ),

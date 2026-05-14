@@ -17,6 +17,8 @@ enum _EnrollStep { capture, processing, done, error }
 
 enum _EnrollStage { center, left, right, blink }
 
+enum _ScanStatus { ready, scanning }
+
 class _StageDef {
   const _StageDef(this.label, this.subtitle, this.icon);
 
@@ -85,9 +87,14 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
   static const int _targetEmbeddingCount = _samplesPerStage * 3;
   static const Duration _frameThrottle = Duration(milliseconds: 260);
   static const Duration _stageSettleDelay = Duration(milliseconds: 650);
+  static const int _stableFramesRequired = 3;
+  static const double _maxYawDeltaPerFrame = 7.0;
+  static const double _maxPitchDeltaPerFrame = 5.0;
+  static const double _maxRollDeltaPerFrame = 5.0;
 
   CameraController? _camCtrl;
   _EnrollStep _step = _EnrollStep.capture;
+  _ScanStatus _scanStatus = _ScanStatus.ready;
   _EnrollStage _stage = _EnrollStage.center;
   String? _errorMsg;
 
@@ -109,8 +116,12 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
   bool _stageChanging = false;
   bool _eyesPreviouslyClosed = false;
   int _blinkCount = 0;
+  int _stableFrameCount = 0;
+  double? _lastYaw;
+  double? _lastPitch;
+  double? _lastRoll;
   DateTime _lastFrameAt = DateTime(0);
-  String _scanHint = 'Arahkan wajah ke kamera';
+  String _scanHint = 'Tekan Mulai saat wajah sudah siap';
 
   int get _collectedSamples {
     return _scanStages.fold<int>(
@@ -122,6 +133,8 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
   int get _currentStageSamples => _samples[_stage]?.length ?? 0;
 
   bool get _needsPoseSamples => _scanStages.contains(_stage);
+
+  bool get _isScanning => _scanStatus == _ScanStatus.scanning;
 
   @override
   void initState() {
@@ -195,7 +208,6 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       } catch (_) {}
 
       setState(() => _camCtrl = ctrl);
-      unawaited(_startImageStream());
     } catch (_) {
       if (!mounted || _disposed) return;
       setState(() {
@@ -224,7 +236,8 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
         !ctrl.value.isInitialized ||
         ctrl.value.isStreamingImages ||
         _disposed ||
-        _step != _EnrollStep.capture) {
+        _step != _EnrollStep.capture ||
+        !_isScanning) {
       return;
     }
 
@@ -250,7 +263,8 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     if (_processingFrame ||
         _stageChanging ||
         _disposed ||
-        _step != _EnrollStep.capture) {
+        _step != _EnrollStep.capture ||
+        !_isScanning) {
       return;
     }
 
@@ -311,7 +325,13 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     double qualityScore,
   ) async {
     if (!_poseMatchesStage(face, _stage)) {
+      _resetPoseStability();
       _setHint(_poseHint(_stage, face));
+      return;
+    }
+
+    if (!_isPoseStable(face)) {
+      _setHint('Tahan posisi sebentar...');
       return;
     }
 
@@ -370,6 +390,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
   Future<void> _advanceStage() async {
     if (_stageChanging) return;
     _stageChanging = true;
+    _resetPoseStability();
 
     final index = _scanStages.indexOf(_stage);
     final next = index >= 0 && index < _scanStages.length - 1
@@ -388,6 +409,36 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     _stageChanging = false;
   }
 
+  bool _isPoseStable(Face face) {
+    final yaw = face.headEulerAngleY;
+    final pitch = face.headEulerAngleX;
+    final roll = face.headEulerAngleZ;
+    if (yaw == null || pitch == null || roll == null) {
+      _resetPoseStability();
+      return false;
+    }
+
+    final stable =
+        _lastYaw != null &&
+        (yaw - _lastYaw!).abs() <= _maxYawDeltaPerFrame &&
+        (pitch - _lastPitch!).abs() <= _maxPitchDeltaPerFrame &&
+        (roll - _lastRoll!).abs() <= _maxRollDeltaPerFrame;
+
+    _lastYaw = yaw;
+    _lastPitch = pitch;
+    _lastRoll = roll;
+    _stableFrameCount = stable ? _stableFrameCount + 1 : 1;
+
+    return _stableFrameCount >= _stableFramesRequired;
+  }
+
+  void _resetPoseStability() {
+    _stableFrameCount = 0;
+    _lastYaw = null;
+    _lastPitch = null;
+    _lastRoll = null;
+  }
+
   bool _poseMatchesStage(Face face, _EnrollStage stage) {
     final yaw = face.headEulerAngleY;
     final pitch = face.headEulerAngleX?.abs();
@@ -401,9 +452,9 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       case _EnrollStage.center:
         return yaw.abs() <= 8;
       case _EnrollStage.left:
-        return yaw <= -9 && yaw >= -28;
+        return yaw >= 15 && yaw <= 45;
       case _EnrollStage.right:
-        return yaw >= 9 && yaw <= 28;
+        return yaw <= -15 && yaw >= -45;
       case _EnrollStage.blink:
         return true;
     }
@@ -415,9 +466,9 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       case _EnrollStage.center:
         return yaw.abs() <= 8 ? 'Tahan posisi...' : 'Hadapkan wajah lurus';
       case _EnrollStage.left:
-        return 'Tengok kiri sedikit';
+        return 'Tengok kiri 15-45 derajat';
       case _EnrollStage.right:
-        return 'Tengok kanan sedikit';
+        return 'Tengok kanan 15-45 derajat';
       case _EnrollStage.blink:
         return 'Kedipkan mata 2x';
     }
@@ -549,24 +600,35 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     setState(() => _scanHint = hint);
   }
 
+  void _startScan() {
+    if (_isScanning || _step != _EnrollStep.capture) return;
+    setState(() {
+      _scanStatus = _ScanStatus.scanning;
+      _stage = _EnrollStage.center;
+      _scanHint = _stageDefs[_EnrollStage.center]!.subtitle;
+      _resetPoseStability();
+    });
+    unawaited(_startImageStream());
+  }
+
   void _restart() {
     for (final stage in _scanStages) {
       _samples[stage]!.clear();
     }
     setState(() {
       _step = _EnrollStep.capture;
+      _scanStatus = _ScanStatus.ready;
       _stage = _EnrollStage.center;
       _errorMsg = null;
       _processingFrame = false;
       _stageChanging = false;
       _eyesPreviouslyClosed = false;
       _blinkCount = 0;
-      _scanHint = 'Arahkan wajah ke kamera';
+      _resetPoseStability();
+      _scanHint = 'Tekan Mulai saat wajah sudah siap';
     });
     if (_camCtrl == null || !_camCtrl!.value.isInitialized) {
       unawaited(_initCamera());
-    } else {
-      unawaited(_startImageStream());
     }
     unawaited(_initFaceRecognition());
   }
@@ -617,6 +679,10 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
   }
 
   Widget _buildCaptureStep() {
+    if (!_isScanning) {
+      return _buildReadyStep();
+    }
+
     return Column(
       children: [
         const SizedBox(height: 16),
@@ -632,6 +698,70 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     );
   }
 
+  Widget _buildReadyStep() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
+      child: Column(
+        children: [
+          Expanded(child: _buildCameraPreview()),
+          const SizedBox(height: 18),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColors.primaryLight,
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: const Row(
+              children: [
+                Icon(
+                  Icons.face_retouching_natural_rounded,
+                  color: AppColors.primary,
+                  size: 28,
+                ),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Siapkan wajah di dalam kamera. Setelah mulai, ikuti arahan lurus, kiri, kanan, lalu kedipkan mata 2x.',
+                    style: TextStyle(
+                      fontSize: 13,
+                      height: 1.35,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            height: 52,
+            child: ElevatedButton.icon(
+              onPressed: _camCtrl?.value.isInitialized == true
+                  ? _startScan
+                  : null,
+              icon: const Icon(Icons.play_arrow_rounded, size: 22),
+              label: const Text(
+                'Mulai Daftarkan Wajah',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildStageProgress() {
     final total = _scanStages.length + 1;
     final activeIndex = _stage == _EnrollStage.blink
@@ -639,7 +769,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
         : _scanStages.indexOf(_stage);
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
+      padding: EdgeInsets.symmetric(horizontal: _isScanning ? 20 : 0),
       child: Row(
         children: List.generate(total, (i) {
           final done = i < activeIndex;
@@ -771,7 +901,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
             const SizedBox(width: 8),
             Flexible(
               child: Text(
-                _scanHint,
+                _isScanning ? _scanHint : 'Siapkan posisi wajah',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: Colors.white,

@@ -80,6 +80,7 @@ class CameraFaceView extends StatefulWidget {
   /// Tombol scan / timeout tidak digunakan dalam mode ini.
   final bool liveMode;
   final LiveFaceDetectionCallback? onLiveFaceDetection;
+  final bool enableLiveness;
 
   const CameraFaceView({
     super.key,
@@ -89,6 +90,7 @@ class CameraFaceView extends StatefulWidget {
     this.onTimeout,
     this.liveMode = false,
     this.onLiveFaceDetection,
+    this.enableLiveness = true,
   });
 
   @override
@@ -124,9 +126,17 @@ class CameraFaceViewState extends State<CameraFaceView>
   int _blinkCount = 0;
   bool _eyesPreviouslyClosed = false;
   bool _livenessPassed = false;
+  int _stableFrameCount = 0;
+  double? _lastYaw;
+  double? _lastPitch;
+  double? _lastRoll;
 
   static const int _timeoutSec = 10;
   static const bool _livenessEnabled = true;
+  static const int _stableFramesRequired = 3;
+  static const double _maxYawDeltaPerFrame = 7.0;
+  static const double _maxPitchDeltaPerFrame = 5.0;
+  static const double _maxRollDeltaPerFrame = 5.0;
 
   // Live mode — throttle face detection agar tidak overload CPU.
   // 300ms memberi inference cukup waktu selesai sebelum frame berikutnya.
@@ -514,9 +524,17 @@ class CameraFaceViewState extends State<CameraFaceView>
         image.width,
         image.height,
       );
-      if (!quality.accepted) return;
+      if (!quality.accepted) {
+        _resetPoseStability();
+        return;
+      }
 
-      if (_livenessEnabled && !_livenessPassed) {
+      if (widget.enableLiveness && _livenessEnabled && !_livenessPassed) {
+        if (mounted) setState(() {});
+        return;
+      }
+
+      if (!_isPoseStable(face)) {
         if (mounted) setState(() {});
         return;
       }
@@ -710,17 +728,54 @@ class CameraFaceViewState extends State<CameraFaceView>
     _blinkCount = 0;
     _eyesPreviouslyClosed = false;
     _livenessPassed = false;
+    _resetPoseStability();
+  }
+
+  bool _isPoseStable(Face face) {
+    final yaw = face.headEulerAngleY;
+    final pitch = face.headEulerAngleX;
+    final roll = face.headEulerAngleZ;
+    if (yaw == null || pitch == null || roll == null) {
+      _resetPoseStability();
+      return false;
+    }
+
+    final stable =
+        _lastYaw != null &&
+        (yaw - _lastYaw!).abs() <= _maxYawDeltaPerFrame &&
+        (pitch - _lastPitch!).abs() <= _maxPitchDeltaPerFrame &&
+        (roll - _lastRoll!).abs() <= _maxRollDeltaPerFrame;
+
+    _lastYaw = yaw;
+    _lastPitch = pitch;
+    _lastRoll = roll;
+    _stableFrameCount = stable ? _stableFrameCount + 1 : 1;
+
+    return _stableFrameCount >= _stableFramesRequired;
+  }
+
+  void _resetPoseStability() {
+    _stableFrameCount = 0;
+    _lastYaw = null;
+    _lastPitch = null;
+    _lastRoll = null;
   }
 
   String _timeoutTitle() {
-    if (_livenessEnabled && _visibleFaces.isNotEmpty && !_livenessPassed) {
+    if (widget.enableLiveness &&
+        _livenessEnabled &&
+        _visibleFaces.isNotEmpty &&
+        !_livenessPassed) {
       return 'Liveness belum terdeteksi';
     }
     return 'Wajah tidak terdeteksi';
   }
 
   String _timeoutMessage() {
-    if (_livenessEnabled && _visibleFaces.isNotEmpty && !_livenessPassed) {
+    if (widget.enableLiveness &&
+        _livenessEnabled &&
+        _visibleFaces.isNotEmpty &&
+        !_livenessPassed) {
       return 'Kedipkan mata 2x saat kamera memindai\nlalu coba lagi';
     }
     return 'Pastikan wajah terlihat jelas\nlalu coba lagi';
@@ -1047,7 +1102,9 @@ class CameraFaceViewState extends State<CameraFaceView>
                             : (isDetected
                                   ? 'Mencocokkan wajah...'
                                   : (isScanning
-                                        ? (_livenessPassed
+                                        ? (!widget.enableLiveness
+                                              ? 'Tahan wajah tetap stabil'
+                                              : _livenessPassed
                                               ? 'Liveness OK'
                                               : (_blinkCount == 0
                                                     ? 'Kedipkan mata 2x'
