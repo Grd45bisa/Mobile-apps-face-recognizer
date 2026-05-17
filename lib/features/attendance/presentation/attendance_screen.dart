@@ -10,6 +10,7 @@ import '../../../shared/theme/app_colors.dart';
 import '../../../shared/models/app_models.dart';
 import '../../../shared/services/attendance_service.dart';
 import '../../../shared/services/auth_service.dart';
+import '../../../shared/services/supabase_client.dart';
 import '../../../shared/providers/notification_provider.dart';
 import '../../../shared/store/app_store.dart';
 import '../../../shared/services/face/embedding_sync_service.dart';
@@ -1349,26 +1350,26 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     return '${days[now.weekday - 1]}, ${now.day} ${months[now.month - 1]} ${now.year}';
   }
 
-Future<String?> _checkForDuplicateFaceOwner(List<double> embedding) async {
-  final supabase = SupabaseClientService.client;
-  final result = await supabase.rpc(
-    'find_duplicate_face_owner',
-    params: {
-      'query_embedding': jsonEncode(embedding),
-      'match_threshold': EmbeddingSyncService._duplicateFaceThreshold,
-    },
-  );
-  if (result is List && result.isNotEmpty) {
-    for (final row in result) {
-      if (row is Map) {
-        final ownerId = row['employee_id']?.toString();
-        final currentUid = AuthService.instance.currentUserId?.toString();
-        if (ownerId != null && ownerId != currentUid) {
-          return ownerId;
+  Future<String?> _checkForDuplicateFaceOwner(List<double> embedding) async {
+    final supabase = SupabaseClientService.client;
+    final result = await supabase.rpc(
+      'find_duplicate_face_owner',
+      params: {
+        'query_embedding': jsonEncode(embedding),
+        'match_threshold': EmbeddingSyncService.duplicateFaceThreshold,
+      },
+    );
+    if (result is List && result.isNotEmpty) {
+      for (final row in result) {
+        if (row is Map) {
+          final ownerId = row['employee_id']?.toString();
+          final currentUid = AuthService.instance.currentUserId?.toString();
+          if (ownerId != null && ownerId != currentUid) {
+            return ownerId;
+          }
         }
       }
     }
+    return null;
   }
-  return null;
-}
 }
