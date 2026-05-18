@@ -30,21 +30,11 @@ class _StageDef {
 
 class _FrameCandidate {
   const _FrameCandidate({
-    required this.nv21Bytes,
-    required this.rawWidth,
-    required this.rawHeight,
-    required this.rotation,
-    required this.face,
     required this.faceCrop,
     required this.qualityScore,
     required this.featureScore,
   });
 
-  final Uint8List nv21Bytes;
-  final int rawWidth;
-  final int rawHeight;
-  final InputImageRotation rotation;
-  final Face face;
   final img.Image faceCrop;
   final double qualityScore;
   final double featureScore;
@@ -103,8 +93,10 @@ class EnrollmentScreen extends StatefulWidget {
 
 class _EnrollmentScreenState extends State<EnrollmentScreen>
     with WidgetsBindingObserver {
-  static const int _samplesPerStage = 4;
+  static const int _samplesPerStage = 3;
   static const int _targetEmbeddingCount = _samplesPerStage * 3;
+  static const int _minFinalEmbeddingCount = 5;
+  static const double _minOutlierCentroidSimilarity = 0.50;
   static const Duration _frameThrottle = Duration(milliseconds: 260);
   static const Duration _stageSettleDelay = Duration(milliseconds: 650);
   static const int _stableFramesRequired = 3;
@@ -383,11 +375,6 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
 
     list.add(
       _FrameCandidate(
-        nv21Bytes: Uint8List.fromList(image.planes.first.bytes),
-        rawWidth: image.width,
-        rawHeight: image.height,
-        rotation: rotation,
-        face: face,
         faceCrop: faceCrop,
         qualityScore: qualityScore,
         featureScore: featureScore,
@@ -650,9 +637,9 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       case _EnrollStage.center:
         return yaw.abs() <= 10;
       case _EnrollStage.left:
-        return yaw >= 10 && yaw <= 45;
+        return yaw >= 10 && yaw <= 18;
       case _EnrollStage.right:
-        return yaw <= -10 && yaw >= -45;
+        return yaw <= -10 && yaw >= -18;
       case _EnrollStage.blink:
         return true;
     }
@@ -664,9 +651,9 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       case _EnrollStage.center:
         return yaw.abs() <= 10 ? 'Tahan posisi...' : 'Hadapkan wajah lurus';
       case _EnrollStage.left:
-        return 'Tengok kiri 10-45 derajat';
+        return 'Tengok kiri 10-18 derajat';
       case _EnrollStage.right:
-        return 'Tengok kanan 10-45 derajat';
+        return 'Tengok kanan 10-18 derajat';
       case _EnrollStage.blink:
         return 'Kedipkan mata 2x';
     }
@@ -685,36 +672,16 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
         throw Exception('Sampel wajah belum lengkap');
       }
 
-      final embeddings = <List<double>>[];
-      for (final candidate in candidates.take(_targetEmbeddingCount)) {
-        final embedding = await FaceRecognitionService.instance
-            .extractEmbeddingFromNv21(
-              nv21Bytes: candidate.nv21Bytes,
-              width: candidate.rawWidth,
-              height: candidate.rawHeight,
-              rotation: candidate.rotation,
-              face: candidate.face,
-              enforceQuality: false,
-            );
-        if (embedding != null) embeddings.add(embedding);
-      }
-
-      if (embeddings.length < _targetEmbeddingCount) {
+      final finalEmbeddings = await _poseReferenceEmbeddings();
+      if (finalEmbeddings.length < _scanStages.length) {
         throw Exception(
-          'Data wajah belum cukup jelas. Coba ulangi pendaftaran.',
-        );
-      }
-
-      final compactedEmbeddings = _compactEnrollmentEmbeddings(embeddings);
-      if (compactedEmbeddings.length < _scanStages.length) {
-        throw Exception(
-          'Data wajah belum cukup konsisten. Coba ulangi pendaftaran.',
+          'Data wajah tiap pose belum cukup jelas. Coba ulangi pendaftaran.',
         );
       }
 
       await EmbeddingSyncService.instance.saveEmbeddings(
         uid,
-        compactedEmbeddings,
+        finalEmbeddings,
       );
 
       if (!mounted || _disposed) return;
@@ -749,24 +716,63 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     return selected;
   }
 
-  List<List<double>> _compactEnrollmentEmbeddings(
-    List<List<double>> embeddings,
-  ) {
-    final compacted = <List<double>>[];
-    for (
-      int offset = 0;
-      offset < embeddings.length;
-      offset += _samplesPerStage
-    ) {
-      final group = embeddings.skip(offset).take(_samplesPerStage).toList();
-      if (group.isEmpty) continue;
-      compacted.add(
-        group.length == 1
-            ? group.first
-            : FaceRecognitionService.bestEmbedding(group),
+  Future<List<List<double>>> _poseReferenceEmbeddings() async {
+    final result = <List<double>>[];
+
+    for (final stage in _scanStages) {
+      final stageSamples = List<_FrameCandidate>.from(_samples[stage] ?? []);
+      stageSamples.sort((a, b) => b.trainingScore.compareTo(a.trainingScore));
+
+      final embeddings = <List<double>>[];
+      for (final candidate in stageSamples.take(_samplesPerStage)) {
+        final embedding = await FaceRecognitionService.instance
+            .extractEmbeddingFromCrop(candidate.faceCrop);
+        if (embedding != null) embeddings.add(embedding);
+      }
+
+      if (embeddings.length < 2) continue;
+      final cleanEmbeddings = _removeOutlierEmbeddings(
+        embeddings,
+        minCount: 2,
       );
+      if (cleanEmbeddings.length < 2) continue;
+      result.add(FaceRecognitionService.averageEmbeddings(cleanEmbeddings));
+      result.add(FaceRecognitionService.bestEmbedding(cleanEmbeddings));
     }
-    return compacted;
+
+    return result;
+  }
+
+  List<List<double>> _removeOutlierEmbeddings(
+    List<List<double>> embeddings, {
+    int minCount = _minFinalEmbeddingCount,
+  }) {
+    if (embeddings.length <= minCount) return embeddings;
+
+    final centroid = FaceRecognitionService.averageEmbeddings(embeddings);
+    final scored = embeddings
+        .map(
+          (embedding) => (
+            embedding: embedding,
+            similarity: FaceRecognitionService.cosineSimilarity(
+              embedding,
+              centroid,
+            ),
+          ),
+        )
+        .toList()
+      ..sort((a, b) => b.similarity.compareTo(a.similarity));
+
+    final kept = scored
+        .where((item) => item.similarity >= _minOutlierCentroidSimilarity)
+        .map((item) => item.embedding)
+        .toList(growable: false);
+
+    if (kept.length >= minCount) return kept;
+    return scored
+        .take(minCount)
+        .map((item) => item.embedding)
+        .toList(growable: false);
   }
 
   img.Image? _cameraImageToImage(

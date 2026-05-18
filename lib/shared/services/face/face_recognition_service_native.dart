@@ -41,6 +41,7 @@ class FaceRecognitionService {
   bool _initialized = false;
 
   static const String _modelAsset = 'assets/models/mobilefacenet.tflite';
+  static const bool _logFaceRecognition = false;
 
   // Cosine similarity threshold for L2-normalized face embeddings.
   // Tune this with real attendance samples if false accepts/rejects shift.
@@ -54,10 +55,8 @@ class FaceRecognitionService {
   Future<void> init() async {
     if (_initialized) return;
     _interpreter = await Interpreter.fromAsset(_modelAsset);
-    // ignore: avoid_print
-    print('[FaceRec] input shape: ${_interpreter!.getInputTensor(0).shape}');
-    // ignore: avoid_print
-    print('[FaceRec] output shape: ${_interpreter!.getOutputTensor(0).shape}');
+    _log('[FaceRec] input shape: ${_interpreter!.getInputTensor(0).shape}');
+    _log('[FaceRec] output shape: ${_interpreter!.getOutputTensor(0).shape}');
     _configureModelShape();
     _initialized = true;
     try {
@@ -93,8 +92,7 @@ class FaceRecognitionService {
     }
     _embeddingSize = outputShape[1];
 
-    // ignore: avoid_print
-    print(
+    _log(
       '[FaceRec] Model loaded - input: [1, $_inputSize, $_inputSize, 3], '
       'output: [1, $_embeddingSize]',
     );
@@ -132,8 +130,7 @@ class FaceRecognitionService {
 
     final quality = FaceQualityFilter.evaluate(fullImage, face);
     if (!quality.accepted) {
-      // ignore: avoid_print
-      print('[FaceRec] Quality rejected: ${quality.rejectReason}');
+      _log('[FaceRec] Quality rejected: ${quality.rejectReason}');
       throw QualityFilterException(
         quality.rejectReason ?? 'Kualitas wajah buruk',
       );
@@ -156,11 +153,15 @@ class FaceRecognitionService {
   }
 
   img.Image? cropFace(img.Image fullImage, Face face) {
+    final aligned = _alignedFaceCrop(fullImage, face);
+    if (aligned != null) return aligned;
+
     final box = face.boundingBox;
-    final left = box.left.toInt().clamp(0, fullImage.width - 1);
-    final top = box.top.toInt().clamp(0, fullImage.height - 1);
-    final right = box.right.toInt().clamp(left + 1, fullImage.width);
-    final bottom = box.bottom.toInt().clamp(top + 1, fullImage.height);
+    final padding = (box.width * 0.4).toInt();
+    final left = (box.left - padding).toInt().clamp(0, fullImage.width - 1);
+    final top = (box.top - padding).toInt().clamp(0, fullImage.height - 1);
+    final right = (box.right + padding).toInt().clamp(left + 1, fullImage.width);
+    final bottom = (box.bottom + padding).toInt().clamp(top + 1, fullImage.height);
     final width = right - left;
     final height = bottom - top;
     if (width <= 10 || height <= 10) return null;
@@ -172,6 +173,59 @@ class FaceRecognitionService {
       width: width,
       height: height,
     );
+  }
+
+  img.Image? _alignedFaceCrop(img.Image fullImage, Face face) {
+    final leftEye = face.landmarks[FaceLandmarkType.leftEye];
+    final rightEye = face.landmarks[FaceLandmarkType.rightEye];
+    if (leftEye == null || rightEye == null) return null;
+
+    final leX = leftEye.position.x.toDouble();
+    final leY = leftEye.position.y.toDouble();
+    final reX = rightEye.position.x.toDouble();
+    final reY = rightEye.position.y.toDouble();
+    final dx = reX - leX;
+    final dy = reY - leY;
+    final eyeDistance = math.sqrt(dx * dx + dy * dy);
+    if (eyeDistance < 8) return null;
+
+    final angle = math.atan2(dy, dx) * 180 / math.pi;
+    final aligned = angle.abs() > 1.0
+        ? img.copyRotate(fullImage, angle: -angle)
+        : fullImage;
+
+    final angleRad = -angle * math.pi / 180;
+    final cosA = math.cos(angleRad);
+    final sinA = math.sin(angleRad);
+    final srcCx = fullImage.width / 2.0;
+    final srcCy = fullImage.height / 2.0;
+    final dstCx = aligned.width / 2.0;
+    final dstCy = aligned.height / 2.0;
+
+    ({double x, double y}) rotatePoint(double px, double py) {
+      final ox = px - srcCx;
+      final oy = py - srcCy;
+      return (
+        x: cosA * ox - sinA * oy + dstCx,
+        y: sinA * ox + cosA * oy + dstCy,
+      );
+    }
+
+    final le = rotatePoint(leX, leY);
+    final re = rotatePoint(reX, reY);
+    final midX = (le.x + re.x) / 2.0;
+    final midY = (le.y + re.y) / 2.0;
+    final alignedEyeDistance = (re.x - le.x).abs();
+    if (alignedEyeDistance < 8) return null;
+
+    final cropSize = (alignedEyeDistance * 3.6).round();
+    final x = (midX - cropSize / 2.0).round().clamp(0, aligned.width - 1);
+    final y = (midY - cropSize * 0.42).round().clamp(0, aligned.height - 1);
+    final w = cropSize.clamp(1, aligned.width - x);
+    final h = cropSize.clamp(1, aligned.height - y);
+    if (w < 24 || h < 24) return null;
+
+    return img.copyCrop(aligned, x: x, y: y, width: w, height: h);
   }
 
   /// Extract embedding from NV21 bytes by decoding ONLY the face crop region.
@@ -189,8 +243,7 @@ class FaceRecognitionService {
     if (enforceQuality) {
       final quality = FaceQualityFilter.evaluateFast(face, width, height);
       if (!quality.accepted) {
-        // ignore: avoid_print
-        print('[FaceRec] Quality rejected: ${quality.rejectReason}');
+        _log('[FaceRec] Quality rejected: ${quality.rejectReason}');
         throw QualityFilterException(
           quality.rejectReason ?? 'Kualitas wajah buruk',
         );
@@ -395,12 +448,13 @@ class FaceRecognitionService {
     final input = flatInput.toList().reshape([1, _inputSize, _inputSize, 3]);
     final output = [List.filled(_embeddingSize, 0.0)];
 
-    final stopwatch = kDebugMode ? (Stopwatch()..start()) : null;
+    final stopwatch = kDebugMode && _logFaceRecognition
+        ? (Stopwatch()..start())
+        : null;
     _interpreter!.run(input, output);
     if (stopwatch != null) {
       stopwatch.stop();
-      // ignore: avoid_print
-      print('[FaceRec] inference: ${stopwatch.elapsedMilliseconds} ms');
+      _log('[FaceRec] inference: ${stopwatch.elapsedMilliseconds} ms');
     }
 
     final embedding = (output[0] as List)
@@ -440,8 +494,7 @@ class FaceRecognitionService {
 
     final matched = bestSimilarity >= _cosineThreshold;
 
-    // ignore: avoid_print
-    print(
+    _log(
       '[FaceRec] similarity=${bestSimilarity.toStringAsFixed(4)}  '
       'euclidean=${bestEuclidean.toStringAsFixed(4)}  '
       'matched=$matched  threshold=$_cosineThreshold',
@@ -496,8 +549,7 @@ class FaceRecognitionService {
 
     final matched = bestSimilarity >= _cosineThreshold;
 
-    // ignore: avoid_print
-    print(
+    _log(
       '[FaceRec] multi similarity=${bestSimilarity.toStringAsFixed(4)}  '
       'euclidean=${bestEuclidean.toStringAsFixed(4)}  '
       'matched=$matched  threshold=$_cosineThreshold',
@@ -596,6 +648,13 @@ class FaceRecognitionService {
 
   double get threshold => _cosineThreshold;
   bool get isInitialized => _initialized;
+
+  static void _log(String message) {
+    if (kDebugMode && _logFaceRecognition) {
+      // ignore: avoid_print
+      print(message);
+    }
+  }
 }
 
 class _NV21CropParams {

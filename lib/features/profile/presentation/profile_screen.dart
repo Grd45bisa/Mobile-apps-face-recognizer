@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import '../../../shared/models/app_models.dart';
-import '../../../shared/store/app_store.dart';
-import '../../../shared/theme/app_colors.dart';
 import '../../../shared/services/auth_service.dart';
 import '../../../shared/services/face/embedding_sync_service.dart';
+import '../../../shared/store/app_store.dart';
+import '../../../shared/theme/app_colors.dart';
 import '../../enrollment/presentation/enrollment_screen.dart';
+import 'face_ai_lab_screen.dart';
 import '../controller/profile_controller.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -42,8 +43,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
       MaterialPageRoute(builder: (_) => const EnrollmentScreen()),
     );
     if (result == true && mounted) {
-      setState(() => _isEnrolled = true);
+      setState(() {
+        _isEnrolled = true;
+        _enrollChecked = true;
+      });
     }
+  }
+
+  Future<void> _goToFaceAiLab() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const FaceAiLabScreen()),
+    );
   }
 
   @override
@@ -451,10 +462,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
           InkWell(
             onTap: _goToEnrollment,
-            borderRadius: const BorderRadius.only(
-              bottomLeft: Radius.circular(14),
-              bottomRight: Radius.circular(14),
-            ),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
               child: Row(
@@ -483,6 +490,54 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
                   const Spacer(),
+                  const Icon(
+                    Icons.chevron_right_rounded,
+                    color: AppColors.textSecondary,
+                    size: 20,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const Divider(
+            height: 1,
+            indent: 16,
+            endIndent: 16,
+            color: AppColors.border,
+          ),
+          InkWell(
+            onTap: _goToFaceAiLab,
+            borderRadius: const BorderRadius.only(
+              bottomLeft: Radius.circular(14),
+              bottomRight: Radius.circular(14),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(7),
+                    decoration: BoxDecoration(
+                      color: AppColors.warningLight,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(
+                      Icons.science_rounded,
+                      size: 16,
+                      color: AppColors.warning,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Face AI Lab',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                  ),
                   const Icon(
                     Icons.chevron_right_rounded,
                     color: AppColors.textSecondary,

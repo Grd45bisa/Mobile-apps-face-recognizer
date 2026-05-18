@@ -1,5 +1,5 @@
-// Web stub — camera/mlkit not available on web.
 import 'package:flutter/material.dart';
+
 import '../../../shared/theme/app_colors.dart';
 
 class EnrollmentScreen extends StatelessWidget {
@@ -15,10 +15,17 @@ class EnrollmentScreen extends StatelessWidget {
         surfaceTintColor: Colors.transparent,
         title: const Text(
           'Daftarkan Wajah',
-          style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 17),
+          style: TextStyle(
+            color: AppColors.textPrimary,
+            fontWeight: FontWeight.bold,
+            fontSize: 17,
+          ),
         ),
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: AppColors.textPrimary),
+          icon: const Icon(
+            Icons.arrow_back_ios_new_rounded,
+            color: AppColors.textPrimary,
+          ),
           onPressed: () => Navigator.pop(context),
         ),
         bottom: const PreferredSize(
@@ -32,17 +39,29 @@ class EnrollmentScreen extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.no_photography_outlined, size: 52, color: AppColors.textSecondary),
+              Icon(
+                Icons.face_retouching_off_rounded,
+                size: 56,
+                color: AppColors.warning,
+              ),
               SizedBox(height: 20),
               Text(
-                'Tidak Tersedia di Browser',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppColors.textPrimary),
+                'Pengenalan Wajah Nonaktif',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.textPrimary,
+                ),
               ),
               SizedBox(height: 8),
               Text(
-                'Pendaftaran wajah memerlukan kamera perangkat.\nGunakan aplikasi Android untuk mendaftarkan wajah.',
-                style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                'Fitur pendaftaran wajah, kamera, dan embedding sedang dinonaktifkan.',
                 textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: AppColors.textSecondary,
+                ),
               ),
             ],
           ),
