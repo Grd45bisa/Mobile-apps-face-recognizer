@@ -5,11 +5,13 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+import 'package:image/image.dart' as img;
 
 import '../../../shared/services/auth_service.dart';
 import '../../../shared/services/face/embedding_sync_service.dart';
 import '../../../shared/services/face/face_quality_filter.dart';
 import '../../../shared/services/face/face_recognition_service.dart';
+import '../../../shared/services/face/sface_recognition_service.dart';
 import '../../../shared/services/screen_brightness_service.dart';
 import '../../../shared/theme/app_colors.dart';
 
@@ -34,6 +36,7 @@ class _FrameCandidate {
     required this.rawHeight,
     required this.rotation,
     required this.face,
+    required this.faceCrop,
     required this.qualityScore,
     required this.featureScore,
   });
@@ -43,6 +46,7 @@ class _FrameCandidate {
   final int rawHeight;
   final InputImageRotation rotation;
   final Face face;
+  final img.Image faceCrop;
   final double qualityScore;
   final double featureScore;
 
@@ -178,7 +182,9 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
 
   Future<void> _initFaceRecognition() async {
     try {
-      await FaceRecognitionService.instance.init();
+      await SFaceRecognitionService.instance.init();
+      // MobileFaceNet fallback, keep for easy rollback:
+      // await FaceRecognitionService.instance.init();
     } catch (e) {
       if (!mounted || _disposed) return;
       setState(() {
@@ -243,7 +249,9 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     WidgetsBinding.instance.removeObserver(this);
     _detector.close();
     _camCtrl?.dispose();
-    FaceRecognitionService.instance.dispose();
+    SFaceRecognitionService.instance.dispose();
+    // MobileFaceNet fallback, keep for easy rollback:
+    // FaceRecognitionService.instance.dispose();
     unawaited(ScreenBrightnessService.instance.releaseMax());
     super.dispose();
   }
@@ -369,6 +377,15 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     final list = _samples[_stage]!;
     if (list.length >= _samplesPerStage) return;
 
+    final fullImage = _cameraImageToImage(image, rotation);
+    final faceCrop = fullImage == null
+        ? null
+        : FaceRecognitionService.instance.cropFace(fullImage, face);
+    if (faceCrop == null) {
+      _setHint('Crop wajah belum stabil. Tahan posisi sebentar...');
+      return;
+    }
+
     list.add(
       _FrameCandidate(
         nv21Bytes: Uint8List.fromList(image.planes.first.bytes),
@@ -376,6 +393,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
         rawHeight: image.height,
         rotation: rotation,
         face: face,
+        faceCrop: faceCrop,
         qualityScore: qualityScore,
         featureScore: featureScore,
       ),
@@ -674,15 +692,22 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
 
       final embeddings = <List<double>>[];
       for (final candidate in candidates.take(_targetEmbeddingCount)) {
-        final embedding = await FaceRecognitionService.instance
-            .extractEmbeddingFromNv21(
-              nv21Bytes: candidate.nv21Bytes,
-              width: candidate.rawWidth,
-              height: candidate.rawHeight,
-              rotation: candidate.rotation,
-              face: candidate.face,
-              enforceQuality: false,
+        final embedding = await SFaceRecognitionService.instance
+            .extractEmbeddingFromCrop(
+              candidate.faceCrop,
             );
+        // SFace memakai crop dari gambar yang sudah dirotasi agar konsisten
+        // dengan Face AI Testing Lab di profile.
+        // MobileFaceNet fallback, keep for easy rollback:
+        // final embedding = await FaceRecognitionService.instance
+        //     .extractEmbeddingFromNv21(
+        //       nv21Bytes: candidate.nv21Bytes,
+        //       width: candidate.rawWidth,
+        //       height: candidate.rawHeight,
+        //       rotation: candidate.rotation,
+        //       face: candidate.face,
+        //       enforceQuality: false,
+        //     );
         if (embedding != null) embeddings.add(embedding);
       }
 
@@ -754,6 +779,73 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       );
     }
     return compacted;
+  }
+
+  img.Image? _cameraImageToImage(
+    CameraImage image,
+    InputImageRotation rotation,
+  ) {
+    try {
+      if (Platform.isAndroid) {
+        return _buildPreviewImageFromNv21(
+          image.planes.first.bytes,
+          image.width,
+          image.height,
+          rotation,
+        );
+      }
+
+      return img.Image.fromBytes(
+        width: image.width,
+        height: image.height,
+        bytes: image.planes.first.bytes.buffer,
+        format: img.Format.uint8,
+        numChannels: 4,
+        order: img.ChannelOrder.bgra,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  img.Image _buildPreviewImageFromNv21(
+    Uint8List nv21,
+    int width,
+    int height,
+    InputImageRotation rotation,
+  ) {
+    final image = img.Image(width: width, height: height);
+    final ySize = width * height;
+
+    for (int y = 0; y < height; y++) {
+      for (int x = 0; x < width; x++) {
+        final yIndex = y * width + x;
+        final uvIndex = ySize + (y >> 1) * width + (x & ~1);
+
+        final yVal = nv21[yIndex];
+        final vVal = nv21[uvIndex];
+        final uVal = nv21[uvIndex + 1];
+
+        final r = (yVal + 1.370705 * (vVal - 128)).round().clamp(0, 255);
+        final g = (yVal - 0.698001 * (vVal - 128) - 0.337633 * (uVal - 128))
+            .round()
+            .clamp(0, 255);
+        final b = (yVal + 1.732446 * (uVal - 128)).round().clamp(0, 255);
+
+        image.setPixelRgb(x, y, r, g, b);
+      }
+    }
+
+    switch (rotation) {
+      case InputImageRotation.rotation90deg:
+        return img.copyRotate(image, angle: 90);
+      case InputImageRotation.rotation180deg:
+        return img.copyRotate(image, angle: 180);
+      case InputImageRotation.rotation270deg:
+        return img.copyRotate(image, angle: 270);
+      case InputImageRotation.rotation0deg:
+        return image;
+    }
   }
 
   InputImage? _buildInputImage(CameraImage image) {

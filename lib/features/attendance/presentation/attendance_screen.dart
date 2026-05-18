@@ -16,6 +16,7 @@ import '../../../shared/providers/notification_provider.dart';
 import '../../../shared/store/app_store.dart';
 import '../../../shared/services/face/embedding_sync_service.dart';
 import '../../../shared/services/face/face_recognition_service.dart';
+import '../../../shared/services/face/sface_recognition_service.dart';
 import '../../enrollment/presentation/enrollment_screen.dart';
 import 'camera_face_view.dart';
 
@@ -87,10 +88,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   static const int _maxVerificationCaptures = 4;
   static const int _minMatchedVerificationSamples = 2;
   static const int _poseEmbeddingCount = 4;
-  static const double _poseVoteThreshold = 0.88;
-  static const double _poseBestThreshold = 0.90;
-  static const double _poseTopAverageThreshold = 0.86;
-  static const double _minAverageVerificationSimilarity = 0.86;
+  static const double _poseVoteThreshold = 0.92;
+  static const double _minAverageVerificationSimilarity = 0.90;
   static const double _registeredOtherFaceRejectDistance = 0.49;
 
   DateTime get _today =>
@@ -104,7 +103,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   void initState() {
     super.initState();
     _checkEnrollmentStatus();
-    FaceRecognitionService.instance.init();
+    SFaceRecognitionService.instance.init();
+    // MobileFaceNet fallback, keep for easy rollback:
+    // FaceRecognitionService.instance.init();
   }
 
   Future<void> _checkEnrollmentStatus() async {
@@ -184,18 +185,32 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         return;
       }
 
-      final query = nv21Bytes != null
-          ? await FaceRecognitionService.instance.extractEmbeddingFromNv21(
-              nv21Bytes: nv21Bytes,
-              width: rawWidth,
-              height: rawHeight,
-              rotation: rotation,
-              face: face,
-            )
-          : await FaceRecognitionService.instance.extractEmbedding(
-              fullImage,
-              face,
+      final sFaceCrop = FaceRecognitionService.instance.cropFace(
+        fullImage,
+        face,
+      );
+      final query = sFaceCrop == null
+          ? null
+          : await SFaceRecognitionService.instance.extractEmbeddingFromCrop(
+              sFaceCrop,
             );
+      // SFace sengaja memakai crop dari fullImage yang sudah dirotasi.
+      // Koordinat Face.boundingBox MLKit mengikuti orientasi input image,
+      // jadi crop langsung dari NV21 mentah bisa meleset dan bikin similarity
+      // meloncat antara sangat kecil dan 1.0.
+      // MobileFaceNet fallback, keep for easy rollback:
+      // final query = nv21Bytes != null
+      //     ? await FaceRecognitionService.instance.extractEmbeddingFromNv21(
+      //         nv21Bytes: nv21Bytes,
+      //         width: rawWidth,
+      //         height: rawHeight,
+      //         rotation: rotation,
+      //         face: face,
+      //       )
+      //     : await FaceRecognitionService.instance.extractEmbedding(
+      //         fullImage,
+      //         face,
+      //       );
       if (query == null) {
         if (_sampleAttempts < _maxVerificationCaptures &&
             _verificationEmbeddings.length < _maxVerificationSamples) {
@@ -203,6 +218,15 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         } else {
           _showFaceMatchFailed('Wajah tidak terbaca dengan jelas.');
         }
+        return;
+      }
+      final sameEmbeddingModel = stored.every(
+        (embedding) => embedding.length == query.length,
+      );
+      if (!sameEmbeddingModel) {
+        _showFaceMatchFailed(
+          'Model wajah berubah. Silakan daftar ulang wajah terlebih dahulu.',
+        );
         return;
       }
 
@@ -341,8 +365,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             sample: sample,
             stored: [entry.value],
             threshold: _poseVoteThreshold,
-            bestThreshold: _poseBestThreshold,
-            topAverageThreshold: _poseTopAverageThreshold,
             requiredPasses: 1,
             strategy: entry.key,
           );
@@ -373,8 +395,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     required List<double> sample,
     required List<List<double>> stored,
     required double threshold,
-    required double bestThreshold,
-    required double topAverageThreshold,
     required int requiredPasses,
     required String strategy,
   }) {
@@ -400,12 +420,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         : similarities.reduce((a, b) => a + b) / similarities.length;
     final passCount = similarities.where((sim) => sim >= threshold).length;
     final voteMatched = similarities.isNotEmpty && passCount >= requiredPasses;
-    final strongMatched =
-        best >= bestThreshold && topAverage >= topAverageThreshold;
-    final matched = voteMatched || strongMatched;
 
     return _SampleVerification(
-      matched: matched,
+      matched: voteMatched,
       bestSimilarity: best,
       topAverageSimilarity: topAverage,
       averageSimilarity: average,
