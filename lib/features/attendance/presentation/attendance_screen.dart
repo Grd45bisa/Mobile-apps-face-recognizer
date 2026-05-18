@@ -25,12 +25,34 @@ class _VerificationDecision {
     required this.bestSimilarity,
     required this.averageSimilarity,
     required this.passCount,
+    required this.totalVotes,
+    required this.strategy,
   });
 
   final bool matched;
   final double bestSimilarity;
   final double averageSimilarity;
   final int passCount;
+  final int totalVotes;
+  final String strategy;
+}
+
+class _SampleVerification {
+  const _SampleVerification({
+    required this.matched,
+    required this.bestSimilarity,
+    required this.averageSimilarity,
+    required this.passCount,
+    required this.totalVotes,
+    required this.strategy,
+  });
+
+  final bool matched;
+  final double bestSimilarity;
+  final double averageSimilarity;
+  final int passCount;
+  final int totalVotes;
+  final String strategy;
 }
 
 class AttendanceScreen extends StatefulWidget {
@@ -58,13 +80,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   int _sampleAttempts = 0;
   double _bestSimilarity = -1.0;
   final List<List<double>> _verificationEmbeddings = [];
-  static const int _maxVerificationSamples = 1;
-  static const int _maxVerificationCaptures = 1;
-  static const int _minPassingSamples = 1;
-  static const double _sampleAcceptThreshold = 0.83;
-  static const double _bestAcceptThreshold = 0.83;
-  static const double _averageAcceptThreshold = 0.83;
-  static const double _weakestAcceptedSampleThreshold = 0.83;
+  static const int _maxVerificationSamples = 3;
+  static const int _maxVerificationCaptures = 5;
+  static const int _minMatchedVerificationSamples = 2;
+  static const int _frontPoseEmbeddingCount = 4;
+  static const double _frontVoteThreshold = 0.72;
   static const double _registeredOtherFaceRejectDistance = 0.49;
 
   DateTime get _today =>
@@ -180,36 +200,27 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         return;
       }
 
-      final duplicateOwner = await _checkForDuplicateFaceOwner(query);
-      if (duplicateOwner != null && duplicateOwner != uid) {
-        _showFaceMatchFailed(
-          'Wajah ini terdeteksi pada akun lain. Silakan konfirmasi.',
-        );
-        return;
-      }
-
       _verificationEmbeddings.add(query);
-
-      if (_verificationEmbeddings.length < _maxVerificationSamples &&
-          _sampleAttempts < _maxVerificationCaptures) {
-        _lastSimilarity = _bestSimilarity >= 0 ? _bestSimilarity : null;
-        await _scanNextFaceSample();
-        return;
-      }
-
-      if (_verificationEmbeddings.length < _maxVerificationSamples) {
-        _showFaceMatchFailed('Wajah belum cukup jelas. Silakan ulangi.');
-        return;
-      }
-
       final decision = _verifySamplesAgainstStored(
         _verificationEmbeddings,
         stored,
       );
       _lastSimilarity = decision.bestSimilarity;
+      _bestSimilarity = decision.bestSimilarity;
 
-      if (!decision.matched) {
-        _bestSimilarity = decision.bestSimilarity;
+      final enoughMatched =
+          decision.passCount >= _minMatchedVerificationSamples;
+      final canTryMore =
+          _verificationEmbeddings.length < _maxVerificationSamples &&
+          _sampleAttempts < _maxVerificationCaptures;
+
+      if (!enoughMatched && canTryMore) {
+        _lastSimilarity = _bestSimilarity >= 0 ? _bestSimilarity : null;
+        await _scanNextFaceSample();
+        return;
+      }
+
+      if (!enoughMatched || !decision.matched) {
         _showFaceMatchFailed(
           'Wajah tidak cukup konsisten dengan data terdaftar. Silakan ulangi.',
         );
@@ -228,7 +239,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
       if (!mounted) return;
       setState(() => _faceMatched = true);
-      await Future.delayed(const Duration(milliseconds: 900));
+      await Future.delayed(const Duration(milliseconds: 450));
       await _recordAttendance();
     } catch (e) {
       if (e is QualityFilterException) {
@@ -251,50 +262,119 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     List<List<double>> samples,
     List<List<double>> stored,
   ) {
-    final similarities = <double>[];
+    final frontStored = _frontPoseEmbeddings(stored);
+    final sampleDecisions = samples
+        .map(
+          (sample) =>
+              _verifySingleSample(sample: sample, frontStored: frontStored),
+        )
+        .toList(growable: false);
 
-    for (final sample in samples) {
-      double best = -1;
-      for (final enrolled in stored) {
-        final sim = FaceRecognitionService.cosineSimilarity(sample, enrolled);
-        if (sim > best) best = sim;
-      }
-      similarities.add(best.clamp(0.0, 1.0));
-    }
-
-    similarities.sort((a, b) => b.compareTo(a));
-    final best = similarities.isEmpty ? 0.0 : similarities.first;
-    final weakest = similarities.isEmpty ? 0.0 : similarities.last;
-    final passCount = similarities
-        .where((sim) => sim >= _sampleAcceptThreshold)
-        .length;
-    final topCount = similarities.length < _minPassingSamples
-        ? similarities.length
-        : _minPassingSamples;
-    final topAverage = topCount == 0
+    final matchedSamples = sampleDecisions.where((d) => d.matched).length;
+    final requiredSamples = samples.length >= _maxVerificationSamples
+        ? _minMatchedVerificationSamples
+        : samples.length;
+    final best = sampleDecisions.isEmpty
         ? 0.0
-        : similarities.take(topCount).reduce((a, b) => a + b) / topCount;
-
+        : sampleDecisions
+              .map((d) => d.bestSimilarity)
+              .reduce((a, b) => a > b ? a : b);
+    final average = sampleDecisions.isEmpty
+        ? 0.0
+        : sampleDecisions.map((d) => d.bestSimilarity).reduce((a, b) => a + b) /
+              sampleDecisions.length;
     final matched =
-        passCount >= _minPassingSamples &&
-        best >= _bestAcceptThreshold &&
-        topAverage >= _averageAcceptThreshold &&
-        weakest >= _weakestAcceptedSampleThreshold;
+        sampleDecisions.isNotEmpty && matchedSamples >= requiredSamples;
+    final strategy = sampleDecisions.map((d) => d.strategy).join('|');
 
-    // ignore: avoid_print
-    print(
-      '[Attendance] verification sims=${similarities.map((s) => s.toStringAsFixed(4)).join(',')} '
-      'pass=$passCount/$_maxVerificationSamples avg=${topAverage.toStringAsFixed(4)} '
-      'best=${best.toStringAsFixed(4)} weakest=${weakest.toStringAsFixed(4)} '
-      'matched=$matched',
-    );
-
-    return _VerificationDecision(
+    final decision = _VerificationDecision(
       matched: matched,
       bestSimilarity: best,
-      averageSimilarity: topAverage,
-      passCount: passCount,
+      averageSimilarity: average,
+      passCount: matchedSamples,
+      totalVotes: sampleDecisions.length,
+      strategy: strategy,
     );
+    _logVerification(decision, samples: sampleDecisions);
+    return decision;
+  }
+
+  _SampleVerification _verifySingleSample({
+    required List<double> sample,
+    required List<List<double>> frontStored,
+  }) {
+    final frontRequiredPasses = frontStored.length >= _frontPoseEmbeddingCount
+        ? _frontPoseEmbeddingCount - 1
+        : frontStored.length;
+    return _voteSingleSample(
+      sample: sample,
+      stored: frontStored,
+      threshold: _frontVoteThreshold,
+      requiredPasses: frontRequiredPasses,
+      strategy: 'front',
+    );
+  }
+
+  _SampleVerification _voteSingleSample({
+    required List<double> sample,
+    required List<List<double>> stored,
+    required double threshold,
+    required int requiredPasses,
+    required String strategy,
+  }) {
+    final similarities =
+        stored
+            .map((enrolled) {
+              final sim = FaceRecognitionService.cosineSimilarity(
+                sample,
+                enrolled,
+              );
+              return sim.clamp(0.0, 1.0);
+            })
+            .toList(growable: false)
+          ..sort((a, b) => b.compareTo(a));
+
+    final best = similarities.isEmpty ? 0.0 : similarities.first;
+    final average = similarities.isEmpty
+        ? 0.0
+        : similarities.reduce((a, b) => a + b) / similarities.length;
+    final passCount = similarities.where((sim) => sim >= threshold).length;
+    final matched = similarities.isNotEmpty && passCount >= requiredPasses;
+
+    return _SampleVerification(
+      matched: matched,
+      bestSimilarity: best,
+      averageSimilarity: average,
+      passCount: passCount,
+      totalVotes: similarities.length,
+      strategy: strategy,
+    );
+  }
+
+  void _logVerification(
+    _VerificationDecision decision, {
+    required List<_SampleVerification> samples,
+  }) {
+    final sampleLog = samples
+        .map(
+          (sample) =>
+              '${sample.strategy}:${sample.passCount}/${sample.totalVotes}'
+              '@${sample.bestSimilarity.toStringAsFixed(4)}',
+        )
+        .join(',');
+    // ignore: avoid_print
+    print(
+      '[Attendance] verification strategy=${decision.strategy} '
+      'samples=${decision.passCount}/${decision.totalVotes} '
+      'avg=${decision.averageSimilarity.toStringAsFixed(4)} '
+      'best=${decision.bestSimilarity.toStringAsFixed(4)} '
+      'matched=${decision.matched} details=[$sampleLog]',
+    );
+  }
+
+  List<List<double>> _frontPoseEmbeddings(List<List<double>> stored) {
+    if (stored.length <= _frontPoseEmbeddingCount) return stored;
+    return stored.take(_frontPoseEmbeddingCount).toList(growable: false);
   }
 
   Future<bool> _isOnline() async {
@@ -377,7 +457,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           color: AppColors.success,
         );
       } else {
-        final record = await AttendanceService.instance.checkOutWithFaceNonce(uid);
+        final record = await AttendanceService.instance.checkOutWithFaceNonce(
+          uid,
+        );
         if (!mounted) return;
         _store.setAttendance(record);
         NotificationProvider.instance.refresh();
@@ -405,10 +487,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         final message = e is PostgrestException
             ? 'Gagal menyimpan presensi: ${e.message}'
             : 'Gagal menyimpan presensi. Coba lagi.';
-        _showResult(
-          success: false,
-          message: message,
-        );
+        _showResult(success: false, message: message);
       }
     } finally {
       if (mounted) setState(() => _processing = false);
@@ -423,10 +502,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       _faceMatched = false;
       _checkingFace = true;
     });
-    await Future.delayed(const Duration(milliseconds: 450));
+    await Future.delayed(const Duration(milliseconds: 160));
     if (!mounted || _processing || _isCheckedOut) return;
     _cameraKey.currentState?.resetToReady();
-    await Future.delayed(const Duration(milliseconds: 120));
+    await Future.delayed(const Duration(milliseconds: 60));
     if (!mounted || _processing || _isCheckedOut) return;
     _cameraKey.currentState?.startScan();
   }
@@ -811,7 +890,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         Icons.face_retouching_off_rounded,
         _lastSimilarity == null
             ? 'Wajah tidak mirip. Konfirmasi ulang lagi.'
-            : 'Wajah tidak mirip. Konfirmasi ulang lagi (${(_lastSimilarity! * 100).toStringAsFixed(0)}%).',
+            : 'Wajah tidak mirip. Konfirmasi ulang lagi (${(_lastSimilarity! * 100).toStringAsFixed(1)}%).',
         AppColors.error,
         AppColors.errorLight,
       );
@@ -1094,7 +1173,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                 active: widget.isActive,
                 hint: 'Arahkan wajah dan tahan posisi',
                 liveMode: false,
-                enableLiveness: false,
+                enableLiveness: _verificationEmbeddings.isEmpty,
                 onTimeout: () {
                   if (!mounted) return;
                   _sampleAttempts++;

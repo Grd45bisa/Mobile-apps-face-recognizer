@@ -133,6 +133,7 @@ class CameraFaceViewState extends State<CameraFaceView>
 
   static const int _timeoutSec = 10;
   static const bool _livenessEnabled = true;
+  static const int _requiredBlinkCount = 1;
   static const int _stableFramesRequired = 3;
   static const double _maxYawDeltaPerFrame = 7.0;
   static const double _maxPitchDeltaPerFrame = 5.0;
@@ -392,7 +393,7 @@ class CameraFaceViewState extends State<CameraFaceView>
           // Both eyes were closed, now both are open = 1 blink.
           _blinkCount++;
           _eyesPreviouslyClosed = false;
-          if (_blinkCount >= 2) {
+          if (_blinkCount >= _requiredBlinkCount) {
             _livenessPassed = true;
           }
           if (mounted) setState(() {}); // Update UI for blink count
@@ -512,7 +513,7 @@ class CameraFaceViewState extends State<CameraFaceView>
         } else if (_eyesPreviouslyClosed && leftOpen && rightOpen) {
           _blinkCount++;
           _eyesPreviouslyClosed = false;
-          if (_blinkCount >= 2) {
+          if (_blinkCount >= _requiredBlinkCount) {
             _livenessPassed = true;
           }
           if (mounted) setState(() {});
@@ -776,7 +777,7 @@ class CameraFaceViewState extends State<CameraFaceView>
         _livenessEnabled &&
         _visibleFaces.isNotEmpty &&
         !_livenessPassed) {
-      return 'Kedipkan mata 2x saat kamera memindai\nlalu coba lagi';
+      return 'Kedipkan mata saat kamera memindai\nlalu coba lagi';
     }
     return 'Pastikan wajah terlihat jelas\nlalu coba lagi';
   }
@@ -1099,8 +1100,8 @@ class CameraFaceViewState extends State<CameraFaceView>
                                   : _livenessPassed
                                   ? 'Liveness OK'
                                   : (_blinkCount == 0
-                                        ? 'Kedipkan mata 2x'
-                                        : 'Kedipan: $_blinkCount / 2'))
+                                        ? 'Kedipkan mata'
+                                        : 'Kedipan: $_blinkCount / $_requiredBlinkCount'))
                             : (isDetected
                                   ? 'Mencocokkan wajah...'
                                   : (isScanning
@@ -1109,8 +1110,8 @@ class CameraFaceViewState extends State<CameraFaceView>
                                               : _livenessPassed
                                               ? 'Liveness OK'
                                               : (_blinkCount == 0
-                                                    ? 'Kedipkan mata 2x'
-                                                    : 'Kedipan: $_blinkCount / 2'))
+                                                    ? 'Kedipkan mata'
+                                                    : 'Kedipan: $_blinkCount / $_requiredBlinkCount'))
                                         : widget.hint)),
                         style: TextStyle(
                           fontSize: 11,

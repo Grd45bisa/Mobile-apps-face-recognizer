@@ -35,6 +35,7 @@ class _FrameCandidate {
     required this.rotation,
     required this.face,
     required this.qualityScore,
+    required this.featureScore,
   });
 
   final Uint8List nv21Bytes;
@@ -43,6 +44,22 @@ class _FrameCandidate {
   final InputImageRotation rotation;
   final Face face;
   final double qualityScore;
+  final double featureScore;
+
+  double get trainingScore =>
+      (qualityScore * 0.65 + featureScore * 0.35).clamp(0.0, 1.0);
+}
+
+class _FeatureCheckResult {
+  const _FeatureCheckResult({
+    required this.accepted,
+    required this.score,
+    this.rejectReason,
+  });
+
+  final bool accepted;
+  final double score;
+  final String? rejectReason;
 }
 
 const Map<_EnrollStage, _StageDef> _stageDefs = {
@@ -103,6 +120,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       performanceMode: FaceDetectorMode.accurate,
       enableClassification: true,
       enableLandmarks: true,
+      enableContours: true,
       enableTracking: true,
     ),
   );
@@ -306,8 +324,20 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
         return;
       }
 
+      final features = _evaluateEnrollmentFeatures(face);
+      if (!features.accepted) {
+        _setHint(features.rejectReason ?? 'Pastikan wajah terlihat lengkap');
+        return;
+      }
+
       if (_needsPoseSamples) {
-        await _handlePoseFrame(image, rotation, face, quality.score);
+        await _handlePoseFrame(
+          image,
+          rotation,
+          face,
+          quality.score,
+          features.score,
+        );
       } else {
         await _handleBlinkFrame(face);
       }
@@ -323,6 +353,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     InputImageRotation rotation,
     Face face,
     double qualityScore,
+    double featureScore,
   ) async {
     if (!_poseMatchesStage(face, _stage)) {
       _resetPoseStability();
@@ -346,6 +377,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
         rotation: rotation,
         face: face,
         qualityScore: qualityScore,
+        featureScore: featureScore,
       ),
     );
 
@@ -444,7 +476,11 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     int frameWidth,
     int frameHeight,
   ) {
-    final quality = FaceQualityFilter.evaluateFast(face, frameWidth, frameHeight);
+    final quality = FaceQualityFilter.evaluateFast(
+      face,
+      frameWidth,
+      frameHeight,
+    );
     if (quality.accepted || _stage == _EnrollStage.center) return quality;
 
     final yaw = face.headEulerAngleY?.abs();
@@ -477,11 +513,115 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
 
     final faceHeightRatio = face.boundingBox.height / frameHeight;
     final sizeScore = (faceHeightRatio / 0.45).clamp(0.0, 1.0);
-    final rollScore = roll != null
-        ? (1.0 - roll / 14.0).clamp(0.0, 1.0)
-        : 1.0;
+    final rollScore = roll != null ? (1.0 - roll / 14.0).clamp(0.0, 1.0) : 1.0;
     final score = (sizeScore * 0.6 + rollScore * 0.4).clamp(0.0, 1.0);
     return FrameQualityResult(accepted: true, score: score);
+  }
+
+  _FeatureCheckResult _evaluateEnrollmentFeatures(Face face) {
+    final requiredLandmarks = [
+      FaceLandmarkType.leftEye,
+      FaceLandmarkType.rightEye,
+      FaceLandmarkType.noseBase,
+      FaceLandmarkType.leftMouth,
+      FaceLandmarkType.rightMouth,
+      FaceLandmarkType.bottomMouth,
+    ];
+    final missing = requiredLandmarks
+        .where((type) => face.landmarks[type] == null)
+        .length;
+    if (missing >= 3) {
+      return const _FeatureCheckResult(
+        accepted: false,
+        score: 0,
+        rejectReason: 'Pastikan wajah tidak tertutup',
+      );
+    }
+
+    final eyeLandmarksOk =
+        face.landmarks[FaceLandmarkType.leftEye] != null &&
+        face.landmarks[FaceLandmarkType.rightEye] != null;
+    if (!eyeLandmarksOk) {
+      return const _FeatureCheckResult(
+        accepted: false,
+        score: 0,
+        rejectReason: 'Pastikan kedua mata terlihat jelas',
+      );
+    }
+
+    final eyeOpenAvailable =
+        face.leftEyeOpenProbability != null &&
+        face.rightEyeOpenProbability != null;
+    if (!eyeOpenAvailable) {
+      return const _FeatureCheckResult(
+        accepted: false,
+        score: 0,
+        rejectReason: 'Hadapkan wajah agar mata terdeteksi',
+      );
+    }
+
+    final contourPoints = _contourPointCount(face);
+    if (contourPoints < 40) {
+      return const _FeatureCheckResult(
+        accepted: false,
+        score: 0,
+        rejectReason: 'Pastikan seluruh wajah masuk frame',
+      );
+    }
+
+    final mouthRatio = _mouthOpeningRatio(face);
+    if (mouthRatio == null) {
+      return const _FeatureCheckResult(
+        accepted: false,
+        score: 0,
+        rejectReason: 'Pastikan mulut dan hidung terlihat',
+      );
+    }
+
+    final landmarkScore = (1.0 - missing / requiredLandmarks.length).clamp(
+      0.0,
+      1.0,
+    );
+    final contourScore = (contourPoints / 68.0).clamp(0.0, 1.0);
+    final leftEye = face.leftEyeOpenProbability!.clamp(0.0, 1.0);
+    final rightEye = face.rightEyeOpenProbability!.clamp(0.0, 1.0);
+    final eyeScore = ((leftEye + rightEye) / 2.0).clamp(0.0, 1.0);
+    final mouthScore = (1.0 - (mouthRatio - 0.025).abs() / 0.08).clamp(
+      0.0,
+      1.0,
+    );
+
+    final score =
+        (landmarkScore * 0.30 +
+                contourScore * 0.25 +
+                eyeScore * 0.25 +
+                mouthScore * 0.20)
+            .clamp(0.0, 1.0);
+
+    return _FeatureCheckResult(accepted: true, score: score);
+  }
+
+  static int _contourPointCount(Face face) {
+    return face.contours.values.fold<int>(
+      0,
+      (sum, contour) => sum + (contour?.points.length ?? 0),
+    );
+  }
+
+  static double? _mouthOpeningRatio(Face face) {
+    if (face.boundingBox.height <= 0) return null;
+    final upper = face.contours[FaceContourType.upperLipBottom]?.points;
+    final lower = face.contours[FaceContourType.lowerLipTop]?.points;
+    if (upper == null || lower == null || upper.isEmpty || lower.isEmpty) {
+      final top = face.landmarks[FaceLandmarkType.noseBase]?.position;
+      final bottom = face.landmarks[FaceLandmarkType.bottomMouth]?.position;
+      if (top == null || bottom == null) return null;
+      return (bottom.y - top.y).abs() / face.boundingBox.height;
+    }
+
+    final upperY = upper.map((p) => p.y).reduce((a, b) => a + b) / upper.length;
+    final lowerY = lower.map((p) => p.y).reduce((a, b) => a + b) / lower.length;
+    return (lowerY - upperY).abs() / face.boundingBox.height;
   }
 
   bool _poseMatchesStage(Face face, _EnrollStage stage) {
@@ -580,7 +720,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     final selected = <_FrameCandidate>[];
     for (final stage in _scanStages) {
       final stageSamples = List<_FrameCandidate>.from(_samples[stage] ?? []);
-      stageSamples.sort((a, b) => b.qualityScore.compareTo(a.qualityScore));
+      stageSamples.sort((a, b) => b.trainingScore.compareTo(a.trainingScore));
       selected.addAll(stageSamples.take(_samplesPerStage));
     }
     return selected;
@@ -1014,7 +1154,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
           Padding(
             padding: EdgeInsets.symmetric(horizontal: 40),
             child: Text(
-              'Aplikasi sedang membuat embedding dan menyimpannya ke perangkat serta Supabase.',
+              'Aplikasi sedang memilih sampel terbaik, membuat embedding, lalu menyimpannya ke perangkat serta Supabase.',
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 12,
@@ -1059,7 +1199,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
             ),
             const SizedBox(height: 8),
             const Text(
-              '9 sampel wajah terbaik telah disimpan dengan aman.\n'
+              '9 sampel wajah terbaik berdasarkan kualitas dan fitur wajah telah disimpan dengan aman.\n'
               'Anda sekarang dapat menggunakan absensi wajah.',
               style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
               textAlign: TextAlign.center,
