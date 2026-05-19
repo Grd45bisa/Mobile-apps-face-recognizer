@@ -6,7 +6,8 @@
       "Bash(copy *)",
       "Bash(del *)",
       "Bash(start *)",
-      "Bash(flutter *)"
+      "Bash(flutter *)",
+      "Bash(dir *)"
     ]
   },
   "$version": 4

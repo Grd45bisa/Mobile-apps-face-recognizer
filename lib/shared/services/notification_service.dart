@@ -76,6 +76,7 @@ class NotificationService {
       const InitializationSettings(android: android, iOS: ios),
     );
 
+    await _plugin.cancelAll();
     await _requestPermissions();
     _initialized = true;
   }

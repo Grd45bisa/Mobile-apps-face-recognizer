@@ -22,18 +22,32 @@ class SplashScreen extends StatefulWidget {
 class _SplashScreenState extends State<SplashScreen>
     with SingleTickerProviderStateMixin {
   late final AnimationController _anim;
-  late final Animation<double> _fadeIn;
+  late final Animation<double> _brandProgress;
+  late final Animation<double> _subtitleProgress;
+  late final Animation<double> _exitProgress;
+  late final Future<void> _introFuture;
 
   @override
   void initState() {
     super.initState();
     _anim = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 450),
+      duration: const Duration(milliseconds: 1950),
     );
-    _fadeIn = CurvedAnimation(parent: _anim, curve: Curves.easeOut);
-    _anim.forward();
-    _checkSession();
+    _brandProgress = CurvedAnimation(
+      parent: _anim,
+      curve: const Interval(0.1538, 0.3846, curve: Curves.easeInOutCubic),
+    );
+    _subtitleProgress = CurvedAnimation(
+      parent: _anim,
+      curve: const Interval(0.4359, 0.6154, curve: Curves.easeOutCubic),
+    );
+    _exitProgress = CurvedAnimation(
+      parent: _anim,
+      curve: const Interval(0.7436, 1.0, curve: Curves.easeInOutCubic),
+    );
+    _introFuture = _playIntroAnimation();
+    unawaited(_checkSession());
   }
 
   @override
@@ -42,11 +56,19 @@ class _SplashScreenState extends State<SplashScreen>
     super.dispose();
   }
 
+  Future<void> _playIntroAnimation() async {
+    await WidgetsBinding.instance.endOfFrame;
+    await Future.delayed(const Duration(milliseconds: 120));
+    if (!mounted) return;
+    await _anim.forward().orCancel;
+  }
+
   Future<void> _checkSession() async {
-    await Future.delayed(const Duration(milliseconds: 850));
+    final onlineFuture = _isOnline();
+    await _introFuture;
     if (!mounted) return;
 
-    if (!await _isOnline()) {
+    if (!await onlineFuture) {
       await _showNoInternetDialog();
       return;
     }
@@ -191,46 +213,153 @@ class _SplashScreenState extends State<SplashScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.background,
-      body: FadeTransition(
-        opacity: _fadeIn,
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const AppLogo(size: 92),
-                const SizedBox(height: 38),
-                _buildLoader(),
-              ],
-            ),
+      backgroundColor: Colors.white,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: _AnimatedPresensiaLogo(
+            brandProgress: _brandProgress,
+            subtitleProgress: _subtitleProgress,
+            exitProgress: _exitProgress,
           ),
         ),
       ),
     );
   }
+}
 
-  Widget _buildLoader() {
-    return Column(
-      children: [
-        const SizedBox(
-          width: 24,
-          height: 24,
-          child: CircularProgressIndicator(
-            color: AppColors.primary,
-            strokeWidth: 2.4,
-          ),
-        ),
-        const SizedBox(height: 14),
-        Text(
-          'Menyiapkan ruang kerja...',
-          style: TextStyle(
-            fontSize: 12,
-            color: AppColors.textSecondary.withValues(alpha: 0.78),
-          ),
-        ),
-      ],
+class _AnimatedPresensiaLogo extends StatelessWidget {
+  const _AnimatedPresensiaLogo({
+    required this.brandProgress,
+    required this.subtitleProgress,
+    required this.exitProgress,
+  });
+
+  final Animation<double> brandProgress;
+  final Animation<double> subtitleProgress;
+  final Animation<double> exitProgress;
+
+  @override
+  Widget build(BuildContext context) {
+    final width = MediaQuery.sizeOf(context).width;
+    final scale = (width / 390).clamp(0.86, 1.08);
+    final logoSize = 72.0 * scale;
+    final textGap = 7.0 * scale;
+    final titleWidth = 170.0 * scale;
+    final fullLockupWidth = logoSize + textGap + titleWidth;
+    final titleStyle = TextStyle(
+      color: Colors.black,
+      fontSize: 33 * scale,
+      fontWeight: FontWeight.w800,
+      height: 0.98,
+      letterSpacing: 0,
     );
+    final subtitleStyle = TextStyle(
+      color: Colors.black,
+      fontSize: 8.5 * scale,
+      fontWeight: FontWeight.w700,
+      height: 1.0,
+      letterSpacing: 0,
+    );
+
+    return AnimatedBuilder(
+      animation: Listenable.merge([
+        brandProgress,
+        subtitleProgress,
+        exitProgress,
+      ]),
+      builder: (context, _) {
+        final brandT = brandProgress.value;
+        final subtitleT = subtitleProgress.value;
+        final exitT = exitProgress.value;
+        final canvasWidth = 300 * scale;
+        final finalLogoLeft = (canvasWidth - fullLockupWidth) / 2;
+        final initialLogoLeft = (canvasWidth - logoSize) / 2;
+        final logoLeft = _lerp(initialLogoLeft, finalLogoLeft, brandT);
+        final titleLeft = logoLeft + logoSize + textGap;
+        final textRevealWidth = titleWidth * brandT;
+        final titleHeight = 33 * scale * 0.98;
+        final logoCenterY = 42 * scale;
+        final centeredTitleTop = logoCenterY - (titleHeight / 2);
+        final finalTitleTop = 15 * scale;
+        final titleTop = _lerp(centeredTitleTop, finalTitleTop, subtitleT);
+        final subtitleTop = _lerp(
+          centeredTitleTop + titleHeight - (3 * scale),
+          50 * scale,
+          subtitleT,
+        );
+
+        return Opacity(
+          opacity: 1 - exitT,
+          child: Transform.scale(
+            scale: _lerp(1, 0.96, exitT),
+            child: SizedBox(
+              width: canvasWidth,
+              height: 100 * scale,
+              child: Align(
+                alignment: Alignment.center,
+                child: SizedBox(
+                  width: canvasWidth,
+                  height: 84 * scale,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    alignment: Alignment.centerLeft,
+                    children: [
+                      Positioned(
+                        left: logoLeft,
+                        top: 6 * scale,
+                        child: SizedBox(
+                          width: logoSize,
+                          height: logoSize,
+                          child: Image.asset(
+                            AuthAssets.logoTransparent,
+                            fit: BoxFit.contain,
+                            filterQuality: FilterQuality.high,
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        left: titleLeft,
+                        top: titleTop,
+                        child: ClipRect(
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            widthFactor: brandT.clamp(0.0, 1.0),
+                            child: Text('Presensia', style: titleStyle),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        left: titleLeft + (1.5 * scale),
+                        top: subtitleTop,
+                        child: Transform.translate(
+                          offset: Offset(0, _lerp(-4 * scale, 0, subtitleT)),
+                          child: Opacity(
+                            opacity: subtitleT,
+                            child: SizedBox(
+                              width: textRevealWidth,
+                              child: Text(
+                                'Presensi wajah & produktivitas',
+                                overflow: TextOverflow.clip,
+                                softWrap: false,
+                                style: subtitleStyle,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  double _lerp(double begin, double end, double t) {
+    return begin + (end - begin) * t;
   }
 }
