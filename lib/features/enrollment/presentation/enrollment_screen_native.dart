@@ -679,10 +679,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
         );
       }
 
-      await EmbeddingSyncService.instance.saveEmbeddings(
-        uid,
-        finalEmbeddings,
-      );
+      await EmbeddingSyncService.instance.saveEmbeddings(uid, finalEmbeddings);
 
       if (!mounted || _disposed) return;
       setState(() => _step = _EnrollStep.done);
@@ -731,10 +728,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
       }
 
       if (embeddings.length < 2) continue;
-      final cleanEmbeddings = _removeOutlierEmbeddings(
-        embeddings,
-        minCount: 2,
-      );
+      final cleanEmbeddings = _removeOutlierEmbeddings(embeddings, minCount: 2);
       if (cleanEmbeddings.length < 2) continue;
       result.add(FaceRecognitionService.averageEmbeddings(cleanEmbeddings));
       result.add(FaceRecognitionService.bestEmbedding(cleanEmbeddings));
@@ -750,18 +744,19 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
     if (embeddings.length <= minCount) return embeddings;
 
     final centroid = FaceRecognitionService.averageEmbeddings(embeddings);
-    final scored = embeddings
-        .map(
-          (embedding) => (
-            embedding: embedding,
-            similarity: FaceRecognitionService.cosineSimilarity(
-              embedding,
-              centroid,
-            ),
-          ),
-        )
-        .toList()
-      ..sort((a, b) => b.similarity.compareTo(a.similarity));
+    final scored =
+        embeddings
+            .map(
+              (embedding) => (
+                embedding: embedding,
+                similarity: FaceRecognitionService.cosineSimilarity(
+                  embedding,
+                  centroid,
+                ),
+              ),
+            )
+            .toList()
+          ..sort((a, b) => b.similarity.compareTo(a.similarity));
 
     final kept = scored
         .where((item) => item.similarity >= _minOutlierCentroidSimilarity)
@@ -1171,7 +1166,7 @@ class _EnrollmentScreenState extends State<EnrollmentScreen>
             Positioned(
               left: 14,
               right: 14,
-              bottom: 14,
+              bottom: MediaQuery.of(context).padding.bottom + 14,
               child: _buildLiveBadge(),
             ),
           ],

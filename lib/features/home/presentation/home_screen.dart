@@ -24,6 +24,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _controller.loadData();
+    NotificationProvider.instance.ensureReadStateLoaded();
   }
 
   @override

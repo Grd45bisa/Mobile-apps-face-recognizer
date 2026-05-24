@@ -1096,7 +1096,7 @@ class CameraFaceViewState extends State<CameraFaceView>
                 ),
               ),
             Positioned(
-              bottom: 14,
+              bottom: MediaQuery.of(context).padding.bottom + 14,
               left: 0,
               right: 0,
               child: Center(

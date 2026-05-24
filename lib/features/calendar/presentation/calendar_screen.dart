@@ -1595,7 +1595,7 @@ class _CalendarScreenState extends State<CalendarScreen>
               top: 12,
               left: 20,
               right: 20,
-              bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+              bottom: _sheetBottomPadding(ctx),
             ),
             child: SingleChildScrollView(
               child: Column(
@@ -1841,7 +1841,7 @@ class _CalendarScreenState extends State<CalendarScreen>
             top: 12,
             left: 20,
             right: 20,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+            bottom: _sheetBottomPadding(ctx),
           ),
           child: SingleChildScrollView(
             child: Column(
@@ -2445,6 +2445,13 @@ class _CalendarScreenState extends State<CalendarScreen>
     ),
   );
 
+  double _sheetBottomPadding(BuildContext context) {
+    final media = MediaQuery.of(context);
+    return media.viewInsets.bottom > 0
+        ? media.viewInsets.bottom + 20
+        : media.padding.bottom + 28;
+  }
+
   Widget _fieldBox({required IconData icon, required String text}) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
@@ -2691,7 +2698,7 @@ class _ManualActivitySheetState extends State<_ManualActivitySheet> {
         top: 12,
         left: 20,
         right: 20,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+        bottom: _sheetBottomPadding(context),
       ),
       child: SingleChildScrollView(
         child: Column(
@@ -2992,6 +2999,13 @@ class _ManualActivitySheetState extends State<_ManualActivitySheet> {
       color: AppColors.textSecondary,
     ),
   );
+
+  double _sheetBottomPadding(BuildContext context) {
+    final media = MediaQuery.of(context);
+    return media.viewInsets.bottom > 0
+        ? media.viewInsets.bottom + 20
+        : media.padding.bottom + 28;
+  }
 
   InputDecoration _inputDeco(String hint) => InputDecoration(
     hintText: hint,

@@ -1,12 +1,6 @@
 import 'package:flutter/material.dart';
 
-enum NotificationCategory {
-  calendar,
-  attendance,
-  tracker,
-  schedule,
-  system,
-}
+enum NotificationCategory { calendar, attendance, tracker, schedule, system }
 
 enum NotificationPriority { high, medium, low }
 
@@ -17,6 +11,7 @@ class AppNotification {
   final String title;
   final String? subtitle;
   final String timeLabel;
+  final DateTime createdAt;
   final IconData icon;
   final Color iconColor;
   final Color iconBg;
@@ -29,6 +24,7 @@ class AppNotification {
     required this.title,
     this.subtitle,
     required this.timeLabel,
+    required this.createdAt,
     required this.icon,
     required this.iconColor,
     required this.iconBg,

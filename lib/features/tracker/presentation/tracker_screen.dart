@@ -39,7 +39,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
   Timer? _ticker;
   DateTime? _startTime;
-  Duration _elapsed = Duration.zero;
+  final _elapsedNotifier = ValueNotifier<Duration>(Duration.zero);
 
   List<Project> _projects = [];
   List<WorklogEntry> _worklogs = [];
@@ -59,6 +59,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
   @override
   void dispose() {
     _ticker?.cancel();
+    _elapsedNotifier.dispose();
     _taskController.dispose();
     super.dispose();
   }
@@ -107,7 +108,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
       if (savedStart != null && !_isRunning) {
         setState(() {
           _startTime = savedStart.toLocal();
-          _elapsed = DateTime.now().difference(_startTime!);
+          _setElapsed(DateTime.now().difference(_startTime!));
         });
         _resumeTicker();
       }
@@ -139,7 +140,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
     final start = DateTime.now();
     setState(() {
       _startTime = start;
-      _elapsed = Duration.zero;
+      _setElapsed(Duration.zero);
     });
 
     final userId = _authService.currentUserId;
@@ -149,9 +150,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || _startTime == null) return;
-      setState(() {
-        _elapsed = DateTime.now().difference(_startTime!);
-      });
+      _setElapsed(DateTime.now().difference(_startTime!));
     });
   }
 
@@ -163,17 +162,8 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
     final start = _startTime!;
     final end = DateTime.now();
-    final duration = end.difference(start);
 
-    if (duration.inMinutes < 1) {
-      setState(() {
-        _startTime = null;
-        _elapsed = Duration.zero;
-      });
-      _showSnackBar('Durasi minimal 1 menit.');
-      return;
-    }
-
+    setState(() {});
     _showSaveTimerSheet(start, end);
   }
 
@@ -198,247 +188,260 @@ class _TrackerScreenState extends State<TrackerScreen> {
         return StatefulBuilder(
           builder: (sheetContext, setSheet) {
             final duration = end.difference(start);
-            return Padding(
-              padding: EdgeInsets.only(
-                top: 12,
-                left: 20,
-                right: 20,
-                bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 20,
-              ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 40,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: AppColors.border,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
+            final bottomSafePadding = _sheetBottomPadding(sheetContext);
+
+            return SafeArea(
+              top: false,
+              child: Padding(
+                padding: EdgeInsets.only(
+                  top: 12,
+                  left: 20,
+                  right: 20,
+                  bottom: bottomSafePadding,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Center(
+                        child: Container(
+                          width: 40,
+                          height: 4,
                           decoration: BoxDecoration(
-                            color: AppColors.successLight,
+                            color: AppColors.border,
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: AppColors.successLight,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(
+                              Icons.stop_circle_rounded,
+                              color: AppColors.success,
+                              size: 20,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          const Text(
+                            'Simpan Entry',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                          const Spacer(),
+                          Text(
+                            _formatDuration(duration),
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                              color: AppColors.primary,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '${_formatHHMM(start)} - ${_formatHHMM(end)}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      _sheetLabel('Nama tugas'),
+                      const SizedBox(height: 6),
+                      TextField(
+                        controller: taskController,
+                        autofocus: taskController.text.isEmpty,
+                        decoration: _sheetInput('Mis. Review dokumen'),
+                      ),
+                      const SizedBox(height: 14),
+                      _sheetLabel('Project'),
+                      const SizedBox(height: 6),
+                      InkWell(
+                        onTap: () async {
+                          final picked = await _showProjectSelectionSheet(
+                            initial: selectedProject,
+                          );
+                          if (picked != null) {
+                            setSheet(() => selectedProject = picked);
+                          }
+                        },
+                        borderRadius: BorderRadius.circular(10),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 14,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.background,
                             borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: AppColors.border),
                           ),
-                          child: const Icon(
-                            Icons.stop_circle_rounded,
-                            color: AppColors.success,
-                            size: 20,
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        const Text(
-                          'Simpan Entry',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                            color: AppColors.textPrimary,
-                          ),
-                        ),
-                        const Spacer(),
-                        Text(
-                          _formatDuration(duration),
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 15,
-                            color: AppColors.primary,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '${_formatHHMM(start)} - ${_formatHHMM(end)}',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                    _sheetLabel('Nama tugas'),
-                    const SizedBox(height: 6),
-                    TextField(
-                      controller: taskController,
-                      autofocus: taskController.text.isEmpty,
-                      decoration: _sheetInput('Mis. Review dokumen'),
-                    ),
-                    const SizedBox(height: 14),
-                    _sheetLabel('Project'),
-                    const SizedBox(height: 6),
-                    InkWell(
-                      onTap: () async {
-                        final picked = await _showProjectSelectionSheet(
-                          initial: selectedProject,
-                        );
-                        if (picked != null) {
-                          setSheet(() => selectedProject = picked);
-                        }
-                      },
-                      borderRadius: BorderRadius.circular(10),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 14,
-                        ),
-                        decoration: BoxDecoration(
-                          color: AppColors.background,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: AppColors.border),
-                        ),
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 10,
-                              height: 10,
-                              decoration: BoxDecoration(
-                                color:
-                                    selectedProject?.color ??
-                                    AppColors.textSecondary,
-                                shape: BoxShape.circle,
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 10,
+                                height: 10,
+                                decoration: BoxDecoration(
+                                  color:
+                                      selectedProject?.color ??
+                                      AppColors.textSecondary,
+                                  shape: BoxShape.circle,
+                                ),
                               ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                selectedProject?.name ?? 'Pilih project',
-                                style: const TextStyle(
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  selectedProject?.name ?? 'Pilih project',
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    color: AppColors.textPrimary,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                              const Icon(
+                                Icons.keyboard_arrow_down_rounded,
+                                color: AppColors.textSecondary,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () => Navigator.pop(sheetContext),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: AppColors.textSecondary,
+                                side: const BorderSide(color: AppColors.border),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 14,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ),
+                              child: const Text(
+                                'Lanjutkan Timer',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
                                   fontSize: 13,
-                                  color: AppColors.textPrimary,
-                                  fontWeight: FontWeight.w500,
                                 ),
-                              ),
-                            ),
-                            const Icon(
-                              Icons.keyboard_arrow_down_rounded,
-                              color: AppColors.textSecondary,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton(
-                            onPressed: () => Navigator.pop(sheetContext),
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: AppColors.textSecondary,
-                              side: const BorderSide(color: AppColors.border),
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                            child: const Text(
-                              'Lanjutkan Timer',
-                              style: TextStyle(
-                                fontWeight: FontWeight.w600,
-                                fontSize: 13,
                               ),
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          flex: 2,
-                          child: ElevatedButton(
-                            onPressed: () async {
-                              if (taskController.text.trim().isEmpty) {
-                                ScaffoldMessenger.of(sheetContext).showSnackBar(
-                                  const SnackBar(
-                                    content: Text('Isi nama tugasnya'),
-                                  ),
-                                );
-                                return;
-                              }
-                              if (selectedProject == null) {
-                                ScaffoldMessenger.of(sheetContext).showSnackBar(
-                                  const SnackBar(
-                                    content: Text('Pilih project dulu'),
-                                  ),
-                                );
-                                return;
-                              }
-
-                              final userId = _authService.currentUserId;
-                              if (userId == null) return;
-
-                              final entry = WorklogEntry(
-                                id: const Uuid().v4(),
-                                date: DateTime(
-                                  start.year,
-                                  start.month,
-                                  start.day,
-                                ),
-                                taskName: taskController.text.trim(),
-                                projectName: selectedProject!.name,
-                                projectColor: selectedProject!.color,
-                                startTime: TimeOfDay.fromDateTime(start),
-                                endTime: TimeOfDay.fromDateTime(end),
-                                duration: _formatDuration(duration),
-                              );
-
-                              try {
-                                await _worklogService.createWorklog(
-                                  entry,
-                                  userId,
-                                );
-                                await _timerStateService.clearActiveTimer(
-                                  userId,
-                                );
-                                await _loadData();
-                                if (!mounted || !sheetContext.mounted) return;
-                                saved = true;
-                                setState(() {
-                                  _startTime = null;
-                                  _elapsed = Duration.zero;
-                                  _taskController.clear();
-                                  _activeProject = selectedProject;
-                                });
-                                Navigator.pop(sheetContext);
-                                _showSnackBar('Aktivitas berhasil disimpan.');
-                              } catch (_) {
-                                if (!mounted || !sheetContext.mounted) return;
-                                ScaffoldMessenger.of(sheetContext).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      'Gagal menyimpan aktivitas. Coba lagi.',
+                          const SizedBox(width: 10),
+                          Expanded(
+                            flex: 2,
+                            child: ElevatedButton(
+                              onPressed: () async {
+                                if (taskController.text.trim().isEmpty) {
+                                  ScaffoldMessenger.of(
+                                    sheetContext,
+                                  ).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('Isi nama tugasnya'),
                                     ),
+                                  );
+                                  return;
+                                }
+                                if (selectedProject == null) {
+                                  ScaffoldMessenger.of(
+                                    sheetContext,
+                                  ).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('Pilih project dulu'),
+                                    ),
+                                  );
+                                  return;
+                                }
+
+                                final userId = _authService.currentUserId;
+                                if (userId == null) return;
+
+                                final entry = WorklogEntry(
+                                  id: const Uuid().v4(),
+                                  date: DateTime(
+                                    start.year,
+                                    start.month,
+                                    start.day,
                                   ),
+                                  taskName: taskController.text.trim(),
+                                  projectName: selectedProject!.name,
+                                  projectColor: selectedProject!.color,
+                                  startTime: TimeOfDay.fromDateTime(start),
+                                  endTime: TimeOfDay.fromDateTime(end),
+                                  duration: _formatDuration(duration),
                                 );
-                              }
-                            },
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: AppColors.primary,
-                              foregroundColor: Colors.white,
-                              elevation: 0,
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
+
+                                try {
+                                  final savedEntry = await _worklogService
+                                      .createWorklog(entry, userId);
+                                  await _timerStateService.clearActiveTimer(
+                                    userId,
+                                  );
+                                  if (!mounted || !sheetContext.mounted) return;
+                                  saved = true;
+                                  setState(() {
+                                    _startTime = null;
+                                    _setElapsed(Duration.zero);
+                                    _taskController.clear();
+                                    _activeProject = selectedProject;
+                                    _worklogs = [savedEntry, ..._worklogs];
+                                  });
+                                  Navigator.pop(sheetContext);
+                                  _showSnackBar('Aktivitas berhasil disimpan.');
+                                } catch (_) {
+                                  if (!mounted || !sheetContext.mounted) return;
+                                  ScaffoldMessenger.of(
+                                    sheetContext,
+                                  ).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'Gagal menyimpan aktivitas. Coba lagi.',
+                                      ),
+                                    ),
+                                  );
+                                }
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.primary,
+                                foregroundColor: Colors.white,
+                                elevation: 0,
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 14,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
                               ),
-                            ),
-                            child: const Text(
-                              'Simpan Entry',
-                              style: TextStyle(
-                                fontWeight: FontWeight.w600,
-                                fontSize: 14,
+                              child: const Text(
+                                'Simpan Entry',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 14,
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                      ],
-                    ),
-                  ],
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
             );
@@ -457,7 +460,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
         _taskController.text = capturedText;
         _activeProject = selectedProject;
         _startTime = start;
-        _elapsed = DateTime.now().difference(start);
+        _setElapsed(DateTime.now().difference(start));
       });
       _resumeTicker();
     }
@@ -468,9 +471,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
     if (_startTime == null) return;
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || _startTime == null) return;
-      setState(() {
-        _elapsed = DateTime.now().difference(_startTime!);
-      });
+      _setElapsed(DateTime.now().difference(_startTime!));
     });
   }
 
@@ -513,6 +514,10 @@ class _TrackerScreenState extends State<TrackerScreen> {
       if (project.name == name) return project;
     }
     return null;
+  }
+
+  void _setElapsed(Duration value) {
+    _elapsedNotifier.value = value;
   }
 
   void _showSnackBar(String message) {
@@ -879,18 +884,23 @@ class _TrackerScreenState extends State<TrackerScreen> {
                         children: [
                           Row(
                             children: [
-                              Text(
-                                _formatDurationClock(_elapsed),
-                                style: TextStyle(
-                                  fontSize: 24,
-                                  fontWeight: FontWeight.w900,
-                                  color: _isRunning
-                                      ? AppColors.primary
-                                      : AppColors.textSecondary,
-                                  fontFeatures: const [
-                                    FontFeature.tabularFigures(),
-                                  ],
-                                ),
+                              ValueListenableBuilder<Duration>(
+                                valueListenable: _elapsedNotifier,
+                                builder: (context, elapsed, _) {
+                                  return Text(
+                                    _formatDurationClock(elapsed),
+                                    style: TextStyle(
+                                      fontSize: 24,
+                                      fontWeight: FontWeight.w900,
+                                      color: _isRunning
+                                          ? AppColors.primary
+                                          : AppColors.textSecondary,
+                                      fontFeatures: const [
+                                        FontFeature.tabularFigures(),
+                                      ],
+                                    ),
+                                  );
+                                },
                               ),
                               if (_isRunning) ...[
                                 const SizedBox(width: 6),
@@ -1495,7 +1505,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
               top: 12,
               left: 20,
               right: 20,
-              bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 20,
+              bottom: _sheetBottomPadding(sheetContext),
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -1747,7 +1757,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
                 top: 12,
                 left: 20,
                 right: 20,
-                bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 20,
+                bottom: _sheetBottomPadding(sheetContext),
               ),
               child: SingleChildScrollView(
                 child: Column(
@@ -2303,7 +2313,7 @@ class _TrackerScreenState extends State<TrackerScreen> {
 
     setState(() {
       _startTime = newStart;
-      _elapsed = DateTime.now().difference(newStart);
+      _setElapsed(DateTime.now().difference(newStart));
     });
   }
 
@@ -2355,6 +2365,13 @@ class _TrackerScreenState extends State<TrackerScreen> {
       color: AppColors.textSecondary,
     ),
   );
+
+  double _sheetBottomPadding(BuildContext context) {
+    final media = MediaQuery.of(context);
+    return media.viewInsets.bottom > 0
+        ? media.viewInsets.bottom + 20
+        : media.padding.bottom + 28;
+  }
 
   InputDecoration _sheetInput(String hint) => InputDecoration(
     hintText: hint,

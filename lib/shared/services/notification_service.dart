@@ -50,9 +50,9 @@ class NotificationService {
   static final NotificationService instance = NotificationService._();
   NotificationService._();
 
-  static const String _notificationIcon = '@mipmap/launcher_icon';
+  static const String _notificationIcon = 'ic_stat_presensia';
   static const largeIcon =
-      DrawableResourceAndroidBitmap('notification_large_logo');
+      DrawableResourceAndroidBitmap('presensia_notification_large');
   static const int _backgroundScheduleDays = 7;
   static const int _checkInReminderBaseId = 1000000;
   static const int _trackerReminderBaseId = 2000000;

@@ -21,6 +21,8 @@ class SplashScreen extends StatefulWidget {
 
 class _SplashScreenState extends State<SplashScreen>
     with SingleTickerProviderStateMixin {
+  static const double _exitStart = 0.7436;
+
   late final AnimationController _anim;
   late final Animation<double> _brandProgress;
   late final Animation<double> _subtitleProgress;
@@ -60,7 +62,18 @@ class _SplashScreenState extends State<SplashScreen>
     await WidgetsBinding.instance.endOfFrame;
     await Future.delayed(const Duration(milliseconds: 120));
     if (!mounted) return;
-    await _anim.forward().orCancel;
+    await _anim.animateTo(_exitStart).orCancel;
+  }
+
+  Future<void> _playExitAnimation() async {
+    if (!mounted) return;
+    await _anim
+        .animateTo(
+          1,
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeInOutCubic,
+        )
+        .orCancel;
   }
 
   Future<void> _checkSession() async {
@@ -73,21 +86,25 @@ class _SplashScreenState extends State<SplashScreen>
       return;
     }
 
-    _routeFromSavedSession();
+    final screen = await _prepareStartScreen();
+    if (!mounted) return;
+
+    await _playExitAnimation();
+    if (!mounted) return;
+
+    _navigate(screen);
   }
 
-  void _routeFromSavedSession() {
+  Future<Widget> _prepareStartScreen() async {
     if (AuthService.instance.isSignedIn) {
       final uid = AuthService.instance.currentUserId;
-      AppStore.instance.loadFromCloud().then((_) {
-        NotificationProvider.instance.refresh();
-      });
+      await AppStore.instance.loadFromCloud();
+      NotificationProvider.instance.refresh();
       if (uid != null) RealtimeSyncService.instance.subscribe(uid);
-      _navigate(const MainScreen());
-      return;
+      return const MainScreen();
     }
 
-    _navigate(const LoginScreen());
+    return const LoginScreen();
   }
 
   Future<bool> _isOnline() async {
@@ -291,8 +308,8 @@ class _AnimatedPresensiaLogo extends StatelessWidget {
 
         return Opacity(
           opacity: 1 - exitT,
-          child: Transform.scale(
-            scale: _lerp(1, 0.96, exitT),
+          child: Transform.translate(
+            offset: Offset(0, _lerp(0, 34 * scale, exitT)),
             child: SizedBox(
               width: canvasWidth,
               height: 100 * scale,

@@ -26,6 +26,14 @@ class _NotificationPanelState extends State<_NotificationPanel> {
   final _provider = NotificationProvider.instance;
 
   @override
+  void initState() {
+    super.initState();
+    _provider.ensureReadStateLoaded().then((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     final notifications = _provider.compute();
     final unread = notifications.where((n) => !n.isRead).length;
@@ -58,7 +66,9 @@ class _NotificationPanelState extends State<_NotificationPanel> {
                       itemBuilder: (_, i) => _NotificationTile(
                         item: notifications[i],
                         onTap: () {
-                          setState(() => _provider.markRead(notifications[i].id));
+                          setState(
+                            () => _provider.markRead(notifications[i].id),
+                          );
                         },
                       ),
                     ),
@@ -100,7 +110,10 @@ class _NotificationPanelState extends State<_NotificationPanel> {
               if (unread > 0) ...[
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
                   decoration: BoxDecoration(
                     color: AppColors.primary,
                     borderRadius: BorderRadius.circular(20),
@@ -190,7 +203,7 @@ class _NotificationTile extends StatelessWidget {
       child: Container(
         color: isUnread
             ? AppColors.primary.withValues(alpha: 0.03)
-            : Colors.transparent,
+            : AppColors.background.withValues(alpha: 0.45),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -200,10 +213,18 @@ class _NotificationTile extends StatelessWidget {
               width: 40,
               height: 40,
               decoration: BoxDecoration(
-                color: item.iconBg,
+                color: isUnread
+                    ? item.iconBg
+                    : AppColors.border.withValues(alpha: 0.55),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Icon(item.icon, color: item.iconColor, size: 20),
+              child: Icon(
+                item.icon,
+                color: isUnread
+                    ? item.iconColor
+                    : AppColors.textSecondary.withValues(alpha: 0.72),
+                size: 20,
+              ),
             ),
             const SizedBox(width: 12),
             // Content
@@ -221,7 +242,9 @@ class _NotificationTile extends StatelessWidget {
                             fontWeight: isUnread
                                 ? FontWeight.w700
                                 : FontWeight.w500,
-                            color: AppColors.textPrimary,
+                            color: isUnread
+                                ? AppColors.textPrimary
+                                : AppColors.textSecondary,
                             height: 1.3,
                           ),
                         ),
@@ -240,9 +263,11 @@ class _NotificationTile extends StatelessWidget {
                     const SizedBox(height: 3),
                     Text(
                       item.subtitle!,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 12,
-                        color: AppColors.textSecondary,
+                        color: AppColors.textSecondary.withValues(
+                          alpha: isUnread ? 1 : 0.72,
+                        ),
                         height: 1.35,
                       ),
                     ),
@@ -278,11 +303,17 @@ class _CategoryChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (label, color) = switch (category) {
-      NotificationCategory.calendar  => ('Pengingat Kalender', AppColors.primary),
+      NotificationCategory.calendar => (
+        'Pengingat Kalender',
+        AppColors.primary,
+      ),
       NotificationCategory.attendance => ('Status Absensi', AppColors.missing),
-      NotificationCategory.tracker   => ('Status Tracker', AppColors.textSecondary),
-      NotificationCategory.schedule  => ('Info Jadwal', AppColors.error),
-      NotificationCategory.system    => ('Info Sistem', AppColors.textSecondary),
+      NotificationCategory.tracker => (
+        'Status Tracker',
+        AppColors.textSecondary,
+      ),
+      NotificationCategory.schedule => ('Info Jadwal', AppColors.error),
+      NotificationCategory.system => ('Info Sistem', AppColors.textSecondary),
     };
 
     return Text(

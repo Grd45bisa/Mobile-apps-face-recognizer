@@ -1142,7 +1142,10 @@ class _BottomSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    final media = MediaQuery.of(context);
+    final bottomInset = media.viewInsets.bottom > 0
+        ? media.viewInsets.bottom
+        : media.padding.bottom;
     return Container(
       decoration: const BoxDecoration(
         color: AppColors.surface,
