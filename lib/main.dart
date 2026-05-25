@@ -55,9 +55,12 @@ class _PresensiaAppState extends State<PresensiaApp> {
             _initialSignedInSkipped = true;
             return;
           }
-          AppStore.instance.loadFromCloud().then((_) {
-            NotificationProvider.instance.refresh();
-          });
+          AppStore.instance
+              .loadFromCloud()
+              .then((_) {
+                NotificationProvider.instance.refresh();
+              })
+              .catchError((_) {});
           final uid = AuthService.instance.currentUserId;
           if (uid != null) RealtimeSyncService.instance.subscribe(uid);
           if (!_isOnResetScreen()) {

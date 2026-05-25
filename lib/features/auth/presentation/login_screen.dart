@@ -9,6 +9,7 @@ import '../../../shared/theme/app_colors.dart';
 import '../../main_nav/main_screen.dart';
 import '../controller/auth_controller.dart';
 import 'forgot_password_screen.dart';
+import 'qr_login_screen.dart';
 import 'widgets/auth_widgets.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -24,6 +25,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _passCtrl = TextEditingController();
   final _controller = AuthController();
   bool _obscure = true;
+  bool _showAdminLogin = false;
 
   @override
   void dispose() {
@@ -45,10 +47,27 @@ class _LoginScreenState extends State<LoginScreen> {
 
     if (!ok || !mounted) return;
 
+    _finishLogin();
+  }
+
+  Future<void> _openQrLogin() async {
+    if (_controller.isLoading) return;
+    FocusScope.of(context).unfocus();
+    final loggedIn = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => const QrLoginScreen()),
+    );
+    if (loggedIn == true && mounted) _finishLogin();
+  }
+
+  void _finishLogin() {
     final uid = AuthService.instance.currentUserId;
-    AppStore.instance.loadFromCloud().then((_) {
-      NotificationProvider.instance.refresh();
-    });
+    AppStore.instance
+        .loadFromCloud()
+        .then((_) {
+          NotificationProvider.instance.refresh();
+        })
+        .catchError((_) {});
     if (uid != null) RealtimeSyncService.instance.subscribe(uid);
 
     Navigator.pushReplacement(
@@ -68,6 +87,13 @@ class _LoginScreenState extends State<LoginScreen> {
       context,
       MaterialPageRoute(builder: (_) => const ForgotPasswordScreen()),
     );
+  }
+
+  void _toggleAdminMode() {
+    setState(() {
+      _showAdminLogin = !_showAdminLogin;
+      _controller.reset();
+    });
   }
 
   @override
@@ -90,7 +116,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   final height = constraints.maxHeight;
                   final panelTop = keyboardOpen
                       ? (height * 0.38).clamp(198.0, 264.0)
-                      : (height * 0.54).clamp(330.0, 420.0);
+                      : (height * 0.48).clamp(296.0, 374.0);
 
                   return Stack(
                     children: [
@@ -98,7 +124,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       AnimatedPositioned(
                         duration: const Duration(milliseconds: 260),
                         curve: Curves.easeOutCubic,
-                        top: keyboardOpen ? panelTop - 92 : panelTop - 118,
+                        top: keyboardOpen ? panelTop - 92 : panelTop - 110,
                         left: 0,
                         right: 0,
                         child: _buildHeroBrand(compact: keyboardOpen),
@@ -208,28 +234,27 @@ class _LoginScreenState extends State<LoginScreen> {
         child: AnimatedPadding(
           duration: const Duration(milliseconds: 220),
           curve: Curves.easeOutCubic,
-          padding: EdgeInsets.fromLTRB(28, keyboardOpen ? 30 : 24, 28, 24),
+          padding: EdgeInsets.fromLTRB(26, keyboardOpen ? 26 : 24, 26, 24),
           child: Center(
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 430),
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _buildHeading(),
-                    const SizedBox(height: 24),
-                    _buildEmailField(),
-                    const SizedBox(height: 16),
-                    _buildPasswordField(),
-                    if (_controller.errorMessage != null) ...[
-                      const SizedBox(height: 16),
-                      ErrorBanner(message: _controller.errorMessage!),
-                    ],
-                    const SizedBox(height: 18),
-                    _buildActionRow(),
-                  ],
-                ),
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                transitionBuilder: (child, animation) {
+                  return FadeTransition(
+                    opacity: animation,
+                    child: SlideTransition(
+                      position: Tween<Offset>(
+                        begin: const Offset(0.05, 0),
+                        end: Offset.zero,
+                      ).animate(animation),
+                      child: child,
+                    ),
+                  );
+                },
+                child: _showAdminLogin
+                  ? _buildAdminLoginState(keyboardOpen: keyboardOpen)
+                  : _buildEmployeeLoginState(),
               ),
             ),
           ),
@@ -238,10 +263,12 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  Widget _buildHeading() {
-    return const Column(
+  Widget _buildEmployeeLoginState() {
+    return Column(
+      key: const ValueKey('employee_state'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
+        const Text(
           'Selamat datang!',
           textAlign: TextAlign.center,
           style: TextStyle(
@@ -251,9 +278,9 @@ class _LoginScreenState extends State<LoginScreen> {
             color: AppColors.textPrimary,
           ),
         ),
-        SizedBox(height: 8),
-        Text(
-          'Masuk untuk mulai presensi dan\nmemantau aktivitas kerjamu',
+        const SizedBox(height: 8),
+        const Text(
+          'Karyawan masuk dengan QR dari admin.',
           textAlign: TextAlign.center,
           style: TextStyle(
             fontSize: 13,
@@ -262,14 +289,133 @@ class _LoginScreenState extends State<LoginScreen> {
             fontWeight: FontWeight.w500,
           ),
         ),
+        const SizedBox(height: 32),
+        _buildQrButton(),
+        const SizedBox(height: 24),
+        Center(
+          child: TextButton.icon(
+            onPressed: _toggleAdminMode,
+            icon: const Icon(Icons.admin_panel_settings_outlined, size: 18),
+            label: const Text('Masuk Dengan Email'),
+            style: TextButton.styleFrom(
+              foregroundColor: AppColors.textSecondary,
+              textStyle: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ),
+        ),
       ],
     );
   }
 
+  Widget _buildAdminLoginState({required bool keyboardOpen}) {
+    return KeyedSubtree(
+      key: const ValueKey('admin_state'),
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                IconButton(
+                  onPressed: _toggleAdminMode,
+                  icon: const Icon(Icons.arrow_back_rounded),
+                  color: AppColors.textPrimary,
+                  tooltip: 'Kembali',
+                ),
+                const Expanded(
+                  child: Text(
+                    'Login Admin',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 48), // Balance for back button
+              ],
+            ),
+            SizedBox(height: keyboardOpen ? 16 : 24),
+            _buildEmailField(),
+            const SizedBox(height: 14),
+            _buildPasswordField(),
+            if (_controller.errorMessage != null) ...[
+              const SizedBox(height: 16),
+              ErrorBanner(message: _controller.errorMessage!),
+            ],
+            const SizedBox(height: 18),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                GestureDetector(
+                  onTap: _goForgotPassword,
+                  child: Text(
+                    'Lupa Password?',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textSecondary.withValues(alpha: 0.9),
+                    ),
+                  ),
+                ),
+                ElevatedButton(
+                  onPressed: _controller.isLoading
+                      ? null
+                      : () {
+                          TextInput.finishAutofillContext();
+                          _submit();
+                        },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    disabledBackgroundColor: AppColors.primary.withValues(
+                      alpha: 0.55,
+                    ),
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 24, vertical: 14),
+                  ),
+                  child: _controller.isLoading
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2,
+                          ),
+                        )
+                      : const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.login_rounded, size: 16),
+                            SizedBox(width: 8),
+                            Text(
+                              'Masuk',
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
+                        ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildEmailField() {
-    return _SketchField(
+    return AuthField(
       controller: _emailCtrl,
-      hint: 'Email',
+      label: 'Email',
       icon: Icons.email_outlined,
       keyboardType: TextInputType.emailAddress,
       textInputAction: TextInputAction.next,
@@ -287,10 +433,89 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
+  Widget _buildQrButton() {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: _openQrLogin,
+        borderRadius: BorderRadius.circular(22),
+        child: Ink(
+          height: 78,
+          padding: const EdgeInsets.symmetric(horizontal: 18),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFF1E88E5), Color(0xFF1565C0)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(22),
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.primary.withValues(alpha: 0.22),
+                blurRadius: 18,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(15),
+                ),
+                child: const Icon(
+                  Icons.qr_code_scanner_rounded,
+                  color: Colors.white,
+                  size: 26,
+                ),
+              ),
+              const SizedBox(width: 14),
+              const Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Masuk Scan QRCode',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    SizedBox(height: 3),
+                    Text(
+                      'Scan QR dari dashboard admin',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(
+                Icons.arrow_forward_rounded,
+                color: Colors.white,
+                size: 22,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildPasswordField() {
-    return _SketchField(
+    return AuthField(
       controller: _passCtrl,
-      hint: 'Password',
+      label: 'Password',
       icon: Icons.lock_outline_rounded,
       obscureText: _obscure,
       textInputAction: TextInputAction.done,
@@ -311,170 +536,6 @@ class _LoginScreenState extends State<LoginScreen> {
         }
         return null;
       },
-    );
-  }
-
-  Widget _buildActionRow() {
-    return Column(
-      children: [
-        SizedBox(
-          width: double.infinity,
-          height: 52,
-          child: ElevatedButton(
-            onPressed: _controller.isLoading
-                ? null
-                : () {
-                    TextInput.finishAutofillContext();
-                    _submit();
-                  },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              disabledBackgroundColor: AppColors.primary.withValues(
-                alpha: 0.55,
-              ),
-              foregroundColor: Colors.white,
-              elevation: 0,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-            ),
-            child: _controller.isLoading
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      color: Colors.white,
-                      strokeWidth: 2,
-                    ),
-                  )
-                : const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.login_rounded, size: 14),
-                      SizedBox(width: 8),
-                      Text(
-                        'Masuk',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                    ],
-                  ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        GestureDetector(
-          onTap: _goForgotPassword,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: Text.rich(
-              TextSpan(
-                text: 'Lupa password? ',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: AppColors.textSecondary.withValues(alpha: 0.9),
-                ),
-                children: const [
-                  TextSpan(
-                    text: 'Reset di sini',
-                    style: TextStyle(
-                      color: AppColors.primary,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ],
-              ),
-              textAlign: TextAlign.center,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _SketchField extends StatelessWidget {
-  final TextEditingController controller;
-  final String hint;
-  final IconData icon;
-  final bool obscureText;
-  final TextInputType keyboardType;
-  final TextInputAction textInputAction;
-  final Iterable<String>? autofillHints;
-  final Widget? suffixIcon;
-  final String? Function(String?)? validator;
-  final void Function(String)? onChanged;
-  final void Function(String)? onFieldSubmitted;
-
-  const _SketchField({
-    required this.controller,
-    required this.hint,
-    required this.icon,
-    this.obscureText = false,
-    this.keyboardType = TextInputType.text,
-    this.textInputAction = TextInputAction.next,
-    this.autofillHints,
-    this.suffixIcon,
-    this.validator,
-    this.onChanged,
-    this.onFieldSubmitted,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ConstrainedBox(
-      constraints: const BoxConstraints(minHeight: 56),
-      child: TextFormField(
-        controller: controller,
-        obscureText: obscureText,
-        keyboardType: keyboardType,
-        textInputAction: textInputAction,
-        autofillHints: autofillHints,
-        onChanged: onChanged,
-        onFieldSubmitted: onFieldSubmitted,
-        style: const TextStyle(
-          fontSize: 15,
-          color: AppColors.textPrimary,
-          fontWeight: FontWeight.w600,
-        ),
-        decoration: InputDecoration(
-          hintText: hint,
-          hintStyle: const TextStyle(
-            fontSize: 15,
-            color: AppColors.textSecondary,
-            fontWeight: FontWeight.w500,
-          ),
-          prefixIcon: Icon(icon, size: 20, color: AppColors.primary),
-          prefixIconConstraints: const BoxConstraints(
-            minWidth: 48,
-            minHeight: 56,
-          ),
-          suffixIcon: suffixIcon,
-          filled: true,
-          fillColor: AppColors.background,
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 16,
-            vertical: 16,
-          ),
-          border: _border(AppColors.border),
-          enabledBorder: _border(AppColors.border),
-          focusedBorder: _border(AppColors.primary, width: 1.5),
-          errorBorder: _border(AppColors.error),
-          focusedErrorBorder: _border(AppColors.error, width: 1.5),
-          errorStyle: const TextStyle(fontSize: 11, color: AppColors.error),
-        ),
-        validator: validator,
-      ),
-    );
-  }
-
-  OutlineInputBorder _border(Color color, {double width = 1}) {
-    return OutlineInputBorder(
-      borderRadius: BorderRadius.circular(16),
-      borderSide: BorderSide(color: color, width: width),
     );
   }
 }

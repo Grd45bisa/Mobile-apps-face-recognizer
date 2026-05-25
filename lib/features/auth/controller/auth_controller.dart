@@ -27,6 +27,21 @@ class AuthController extends ChangeNotifier {
     _set(AuthStatus.loading);
     try {
       await AuthService.instance.signIn(email: email, password: password);
+      final userId = AuthService.instance.currentUserId;
+      final profile = await SupabaseClientService.client
+          .from('profiles')
+          .select('role')
+          .eq('id', userId ?? '')
+          .maybeSingle();
+      final role = profile?['role'] as String?;
+      if (role != 'admin') {
+        await AuthService.instance.signOut();
+        _set(
+          AuthStatus.error,
+          'Email dan password hanya untuk admin. Karyawan wajib masuk dengan QR Code dari admin.',
+        );
+        return false;
+      }
       _set(AuthStatus.success);
       return true;
     } on AuthException catch (e) {

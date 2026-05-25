@@ -22,6 +22,8 @@ class SplashScreen extends StatefulWidget {
 class _SplashScreenState extends State<SplashScreen>
     with SingleTickerProviderStateMixin {
   static const double _exitStart = 0.7436;
+  static const Duration _cloudReadyTimeout = Duration(seconds: 8);
+  static const Duration _connectivityTimeout = Duration(seconds: 3);
 
   late final AnimationController _anim;
   late final Animation<double> _brandProgress;
@@ -62,43 +64,62 @@ class _SplashScreenState extends State<SplashScreen>
     await WidgetsBinding.instance.endOfFrame;
     await Future.delayed(const Duration(milliseconds: 120));
     if (!mounted) return;
-    await _anim.animateTo(_exitStart).orCancel;
+    try {
+      await _anim.animateTo(_exitStart).orCancel;
+    } on TickerCanceled {
+      // Splash sudah ditutup sebelum animasi selesai.
+    }
   }
 
   Future<void> _playExitAnimation() async {
     if (!mounted) return;
-    await _anim
-        .animateTo(
-          1,
-          duration: const Duration(milliseconds: 500),
-          curve: Curves.easeInOutCubic,
-        )
-        .orCancel;
+    try {
+      await _anim
+          .animateTo(
+            1,
+            duration: const Duration(milliseconds: 500),
+            curve: Curves.easeInOutCubic,
+          )
+          .orCancel;
+    } on TickerCanceled {
+      // Splash sudah ditutup sebelum animasi selesai.
+    }
   }
 
   Future<void> _checkSession() async {
-    final onlineFuture = _isOnline();
-    await _introFuture;
-    if (!mounted) return;
+    try {
+      final onlineFuture = _isOnline();
+      await _introFuture;
+      if (!mounted) return;
 
-    if (!await onlineFuture) {
-      await _showNoInternetDialog();
-      return;
+      if (!await onlineFuture) {
+        await _showNoInternetDialog();
+        return;
+      }
+
+      final screen = await _prepareStartScreen();
+      if (!mounted) return;
+
+      await _playExitAnimation();
+      if (!mounted) return;
+
+      _navigate(screen);
+    } catch (_) {
+      if (!mounted) return;
+      await _playExitAnimation();
+      if (!mounted) return;
+      _navigate(_fallbackStartScreen());
     }
-
-    final screen = await _prepareStartScreen();
-    if (!mounted) return;
-
-    await _playExitAnimation();
-    if (!mounted) return;
-
-    _navigate(screen);
   }
 
   Future<Widget> _prepareStartScreen() async {
     if (AuthService.instance.isSignedIn) {
       final uid = AuthService.instance.currentUserId;
-      await AppStore.instance.loadFromCloud();
+      try {
+        await AppStore.instance.loadFromCloud().timeout(_cloudReadyTimeout);
+      } catch (_) {
+        // Jangan tahan splash selamanya. Data bisa lanjut tersinkron saat screen utama hidup.
+      }
       NotificationProvider.instance.refresh();
       if (uid != null) RealtimeSyncService.instance.subscribe(uid);
       return const MainScreen();
@@ -107,8 +128,19 @@ class _SplashScreenState extends State<SplashScreen>
     return const LoginScreen();
   }
 
+  Widget _fallbackStartScreen() {
+    return AuthService.instance.isSignedIn
+        ? const MainScreen()
+        : const LoginScreen();
+  }
+
   Future<bool> _isOnline() async {
-    final result = await Connectivity().checkConnectivity();
+    final result = await Connectivity().checkConnectivity().timeout(
+      _connectivityTimeout,
+      onTimeout: () {
+        return [ConnectivityResult.wifi];
+      },
+    );
     return result.any((r) => r != ConnectivityResult.none);
   }
 
