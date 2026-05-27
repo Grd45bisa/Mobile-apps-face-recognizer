@@ -90,30 +90,6 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<void> _checkSession() async {
-<<<<<<< HEAD
-    try {
-      final onlineFuture = _isOnline();
-      await _introFuture;
-      if (!mounted) return;
-
-      if (!await onlineFuture) {
-        await _showNoInternetDialog();
-        return;
-      }
-
-      final screen = await _prepareStartScreen();
-      if (!mounted) return;
-
-      await _playExitAnimation();
-      if (!mounted) return;
-
-      _navigate(screen);
-    } catch (_) {
-      if (!mounted) return;
-      await _playExitAnimation();
-      if (!mounted) return;
-      _navigate(_fallbackStartScreen());
-=======
     if (_checkingSession || _didNavigate) return;
     _checkingSession = true;
     try {
@@ -143,37 +119,23 @@ class _SplashScreenState extends State<SplashScreen>
       _navigate(_fallbackStartScreen());
     } finally {
       _checkingSession = false;
->>>>>>> recover-work
     }
   }
 
   Future<Widget> _prepareStartScreen() async {
     if (AuthService.instance.isSignedIn) {
-<<<<<<< HEAD
-      final uid = AuthService.instance.currentUserId;
-      try {
-        await AppStore.instance.loadFromCloud().timeout(_cloudReadyTimeout);
-      } catch (_) {
-        // Jangan tahan splash selamanya. Data bisa lanjut tersinkron saat screen utama hidup.
-      }
-      NotificationProvider.instance.refresh();
-      if (uid != null) RealtimeSyncService.instance.subscribe(uid);
-=======
       try {
         await AppStore.instance.loadFromCloud().timeout(_cloudReadyTimeout);
       } catch (_) {
         // Jangan tahan splash selamanya. Data bisa tersinkron setelah screen utama hidup.
       }
       _activateSignedInServices();
->>>>>>> recover-work
       return const MainScreen();
     }
 
     return const LoginScreen();
   }
 
-<<<<<<< HEAD
-=======
   void _activateSignedInServices() {
     if (!AuthService.instance.isSignedIn) return;
     final uid = AuthService.instance.currentUserId;
@@ -181,7 +143,6 @@ class _SplashScreenState extends State<SplashScreen>
     if (uid != null) RealtimeSyncService.instance.subscribe(uid);
   }
 
->>>>>>> recover-work
   Widget _fallbackStartScreen() {
     return AuthService.instance.isSignedIn
         ? const MainScreen()
@@ -189,11 +150,8 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<bool> _isOnline() async {
-<<<<<<< HEAD
-=======
     if (kIsWeb) return true;
 
->>>>>>> recover-work
     final result = await Connectivity().checkConnectivity().timeout(
       _connectivityTimeout,
       onTimeout: () {

@@ -208,23 +208,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-<<<<<<< HEAD
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 6,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        Text(
-                          profile.fullName,
-                          overflow: TextOverflow.ellipsis,
-                          maxLines: 1,
-                          style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w900,
-                            color: AppColors.textPrimary,
-                          ),
-                        ),
-=======
                     Text(
                       profile.fullName,
                       overflow: TextOverflow.ellipsis,
@@ -240,30 +223,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       spacing: 7,
                       runSpacing: 5,
                       children: [
->>>>>>> recover-work
                         _statusPill(
                           'Aktif',
                           AppColors.successLight,
                           AppColors.success,
                         ),
-<<<<<<< HEAD
-                      ],
-                    ),
-                    const SizedBox(height: 5),
-                    Text(
-                      profile.position?.trim().isNotEmpty == true
-                          ? profile.position!
-                          : 'Karyawan Presensia',
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                    if (profile.department?.trim().isNotEmpty == true) ...[
-                      const SizedBox(height: 2),
-=======
                         if (profile.position?.trim().isNotEmpty == true)
                           _statusPill(
                             profile.position!,
@@ -274,7 +238,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                     if (profile.department?.trim().isNotEmpty == true) ...[
                       const SizedBox(height: 6),
->>>>>>> recover-work
                       Text(
                         profile.department!,
                         overflow: TextOverflow.ellipsis,
@@ -806,10 +769,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       ),
       child: Text(
         label,
-<<<<<<< HEAD
-=======
         overflow: TextOverflow.ellipsis,
->>>>>>> recover-work
         style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900, color: fg),
       ),
     );
