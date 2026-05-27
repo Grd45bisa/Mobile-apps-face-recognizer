@@ -160,8 +160,14 @@ class FaceRecognitionService {
     final padding = (box.width * 0.4).toInt();
     final left = (box.left - padding).toInt().clamp(0, fullImage.width - 1);
     final top = (box.top - padding).toInt().clamp(0, fullImage.height - 1);
-    final right = (box.right + padding).toInt().clamp(left + 1, fullImage.width);
-    final bottom = (box.bottom + padding).toInt().clamp(top + 1, fullImage.height);
+    final right = (box.right + padding).toInt().clamp(
+      left + 1,
+      fullImage.width,
+    );
+    final bottom = (box.bottom + padding).toInt().clamp(
+      top + 1,
+      fullImage.height,
+    );
     final width = right - left;
     final height = bottom - top;
     if (width <= 10 || height <= 10) return null;

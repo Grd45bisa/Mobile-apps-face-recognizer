@@ -49,6 +49,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   String? _bestTarget;
   int _verificationSamples = 0;
   _StoredMatch? _bestVerificationMatch;
+  String? _cachedEmbeddingUid;
+  List<List<double>>? _cachedEmbeddings;
 
   DateTime get _today =>
       DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
@@ -67,7 +69,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   Future<void> _checkEnrollmentStatus() async {
     final uid = AuthService.instance.currentUserId;
     if (uid == null) return;
-    final embeddings = await EmbeddingSyncService.instance.getEmbeddings(uid);
+    final embeddings = await _loadStoredEmbeddings(uid, forceRefresh: true);
     if (!mounted) return;
     setState(() {
       _isEnrolled = embeddings != null && embeddings.isNotEmpty;
@@ -559,7 +561,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   }
 
   Future<bool> _onFaceDetectedForAttendance({
-    required img.Image fullImage,
+    required img.Image? fullImage,
     required Uint8List? nv21Bytes,
     required int rawWidth,
     required int rawHeight,
@@ -572,7 +574,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       final uid = AuthService.instance.currentUserId;
       if (uid == null) return true;
 
-      final stored = await EmbeddingSyncService.instance.getEmbeddings(uid);
+      final stored = await _loadStoredEmbeddings(uid);
       if (stored == null || stored.isEmpty) {
         if (!mounted) return true;
         setState(() {
@@ -582,6 +584,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         return true;
       }
 
+      if (fullImage == null) return false;
       final query = await FaceRecognitionService.instance.extractEmbedding(
         fullImage,
         face,
@@ -624,6 +627,28 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       _showFaceMatchFailed('Presensi wajah gagal. Coba lagi.');
       return true;
     }
+  }
+
+  Future<List<List<double>>?> _loadStoredEmbeddings(
+    String uid, {
+    bool forceRefresh = false,
+  }) async {
+    if (!forceRefresh &&
+        _cachedEmbeddingUid == uid &&
+        _cachedEmbeddings != null &&
+        _cachedEmbeddings!.isNotEmpty) {
+      return _cachedEmbeddings;
+    }
+
+    final embeddings = await EmbeddingSyncService.instance.getEmbeddings(uid);
+    if (embeddings != null && embeddings.isNotEmpty) {
+      _cachedEmbeddingUid = uid;
+      _cachedEmbeddings = embeddings;
+    } else if (forceRefresh || _cachedEmbeddingUid == uid) {
+      _cachedEmbeddingUid = null;
+      _cachedEmbeddings = null;
+    }
+    return embeddings;
   }
 
   _StoredMatch _bestStoredMatch(
@@ -719,8 +744,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         NotificationProvider.instance.refresh();
         await _showAttendanceSuccessDialog(
           title: 'Check-in Berhasil',
-          message:
-              'Selamat bekerja. Semoga hari ini lancar dan produktif.',
+          message: 'Selamat bekerja. Semoga hari ini lancar dan produktif.',
           timeLabel: 'Check-in pukul ${_fmtTod(record.checkIn!)}',
           icon: Icons.work_history_rounded,
           color: AppColors.success,
@@ -759,6 +783,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       setState(() {
         _isEnrolled = true;
         _enrollChecked = true;
+        _cachedEmbeddingUid = null;
+        _cachedEmbeddings = null;
         _cameraKey = GlobalKey<CameraFaceViewState>();
       });
     }

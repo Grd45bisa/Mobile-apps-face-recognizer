@@ -57,7 +57,7 @@ class LiveFaceDetectionResult {
 
 typedef FaceDetectedCallback =
     Future<bool> Function({
-      required img.Image fullImage,
+      required img.Image? fullImage,
       required InputImage inputImage,
       required Uint8List? nv21Bytes,
       required int rawWidth,
@@ -142,7 +142,11 @@ class CameraFaceViewState extends State<CameraFaceView>
   // Live mode — throttle face detection agar tidak overload CPU.
   // 300ms memberi inference cukup waktu selesai sebelum frame berikutnya.
   static const Duration _liveThrottle = Duration(milliseconds: 300);
+  static const Duration _faceOverlayThrottle = Duration(milliseconds: 200);
+  static const Duration _statusUiThrottle = Duration(milliseconds: 200);
   DateTime _lastLiveProcess = DateTime(0);
+  DateTime _lastFaceOverlayUpdate = DateTime(0);
+  DateTime _lastStatusUiUpdate = DateTime(0);
 
   @override
   void initState() {
@@ -398,7 +402,7 @@ class CameraFaceViewState extends State<CameraFaceView>
           if (_blinkCount >= _requiredBlinkCount) {
             _livenessPassed = true;
           }
-          if (mounted) setState(() {}); // Update UI for blink count
+          _refreshStatusUi(force: true);
         }
       }
 
@@ -488,7 +492,11 @@ class CameraFaceViewState extends State<CameraFaceView>
     _processingFrame = true;
 
     try {
-      final inputImage = _buildInputImage(image);
+      final plane = image.planes.first;
+      final nv21Bytes = Platform.isAndroid
+          ? Uint8List.fromList(plane.bytes)
+          : null;
+      final inputImage = _buildInputImage(image, overrideBytes: nv21Bytes);
       final rotation = _currentRotation();
       if (inputImage == null || rotation == null) return;
 
@@ -521,7 +529,7 @@ class CameraFaceViewState extends State<CameraFaceView>
           if (_blinkCount >= _requiredBlinkCount) {
             _livenessPassed = true;
           }
-          if (mounted) setState(() {});
+          _refreshStatusUi(force: true);
         }
       }
 
@@ -536,12 +544,12 @@ class CameraFaceViewState extends State<CameraFaceView>
       }
 
       if (widget.enableLiveness && _livenessEnabled && !_livenessPassed) {
-        if (mounted) setState(() {});
+        _refreshStatusUi();
         return;
       }
 
       if (!_isPoseStable(face)) {
-        if (mounted) setState(() {});
+        _refreshStatusUi();
         return;
       }
 
@@ -550,9 +558,7 @@ class CameraFaceViewState extends State<CameraFaceView>
       final best = _SampledFrame(
         fullImage: fullImage,
         inputImage: inputImage,
-        nv21Bytes: Platform.isAndroid
-            ? Uint8List.fromList(image.planes.first.bytes)
-            : null,
+        nv21Bytes: nv21Bytes,
         rawWidth: image.width,
         rawHeight: image.height,
         rotation: rotation,
@@ -600,11 +606,33 @@ class CameraFaceViewState extends State<CameraFaceView>
     InputImageRotation? rotation,
   ) {
     if (!mounted || _disposed) return;
+    if (faces.isEmpty &&
+        _visibleFaces.isEmpty &&
+        _visibleImageSize == null &&
+        _visibleRotation == null) {
+      return;
+    }
+    final now = DateTime.now();
+    if (faces.isNotEmpty &&
+        now.difference(_lastFaceOverlayUpdate) < _faceOverlayThrottle) {
+      return;
+    }
+    _lastFaceOverlayUpdate = now;
     setState(() {
       _visibleFaces = List<Face>.unmodifiable(faces);
       _visibleImageSize = imageSize;
       _visibleRotation = rotation;
     });
+  }
+
+  void _refreshStatusUi({bool force = false}) {
+    if (!mounted || _disposed) return;
+    final now = DateTime.now();
+    if (!force && now.difference(_lastStatusUiUpdate) < _statusUiThrottle) {
+      return;
+    }
+    _lastStatusUiUpdate = now;
+    setState(() {});
   }
 
   void _clearVisibleFaces() {
@@ -622,7 +650,7 @@ class CameraFaceViewState extends State<CameraFaceView>
     setState(() {});
   }
 
-  InputImage? _buildInputImage(CameraImage image) {
+  InputImage? _buildInputImage(CameraImage image, {Uint8List? overrideBytes}) {
     final ctrl = _controller;
     if (ctrl == null) return null;
 
@@ -636,7 +664,7 @@ class CameraFaceViewState extends State<CameraFaceView>
     final plane = image.planes.first;
 
     return InputImage.fromBytes(
-      bytes: plane.bytes,
+      bytes: overrideBytes ?? plane.bytes,
       metadata: InputImageMetadata(
         size: Size(image.width.toDouble(), image.height.toDouble()),
         rotation: rotation,
@@ -1038,56 +1066,128 @@ class CameraFaceViewState extends State<CameraFaceView>
         final trackedFaces = (widget.liveMode || isScanning)
             ? _visibleFaces
             : const <Face>[];
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            FittedBox(
-              fit: BoxFit.cover,
-              child: SizedBox(
-                width: ctrl.value.previewSize!.height,
-                height: ctrl.value.previewSize!.width,
-                child: CameraPreview(ctrl),
+        return RepaintBoundary(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              RepaintBoundary(
+                child: FittedBox(
+                  fit: BoxFit.cover,
+                  child: SizedBox(
+                    width: ctrl.value.previewSize!.height,
+                    height: ctrl.value.previewSize!.width,
+                    child: CameraPreview(ctrl),
+                  ),
+                ),
               ),
-            ),
-            CustomPaint(
-              painter: _FaceFramePainter(
-                faces: trackedFaces,
-                imageSize: _visibleImageSize,
-                rotation: _visibleRotation,
-                isFrontCamera:
-                    ctrl.description.lensDirection == CameraLensDirection.front,
+              RepaintBoundary(
+                child: CustomPaint(
+                  painter: _FaceFramePainter(
+                    faces: trackedFaces,
+                    imageSize: _visibleImageSize,
+                    rotation: _visibleRotation,
+                    isFrontCamera:
+                        ctrl.description.lensDirection ==
+                        CameraLensDirection.front,
+                  ),
+                ),
               ),
-            ),
-            if ((isScanning || isDetected) && !widget.liveMode)
+              if ((isScanning || isDetected) && !widget.liveMode)
+                Positioned(
+                  top: 14,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.6),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.timer_outlined,
+                            size: 13,
+                            color: Colors.white70,
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            isDetected
+                                ? 'Wajah terdeteksi'
+                                : '$_countdown detik',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
               Positioned(
-                top: 14,
+                bottom: MediaQuery.of(context).padding.bottom + 14,
                 left: 0,
                 right: 0,
                 child: Center(
                   child: Container(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
+                      horizontal: 12,
                       vertical: 6,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.6),
+                      color: Colors.black.withValues(alpha: 0.55),
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(
-                          Icons.timer_outlined,
+                        Icon(
+                          widget.liveMode
+                              ? (_livenessPassed
+                                    ? Icons.verified_user_rounded
+                                    : Icons.face_retouching_natural_rounded)
+                              : (isScanning
+                                    ? Icons.search_rounded
+                                    : Icons.info_outline_rounded),
                           size: 13,
-                          color: Colors.white70,
+                          color: _livenessPassed
+                              ? AppColors.success
+                              : Colors.white70,
                         ),
-                        const SizedBox(width: 5),
+                        const SizedBox(width: 6),
                         Text(
-                          isDetected ? 'Wajah terdeteksi' : '$_countdown detik',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: Colors.white,
-                            fontWeight: FontWeight.w700,
+                          widget.liveMode
+                              ? (!widget.enableLiveness
+                                    ? 'Arahkan wajah'
+                                    : _livenessPassed
+                                    ? 'Liveness OK'
+                                    : (_blinkCount == 0
+                                          ? 'Kedipkan mata'
+                                          : 'Kedipan: $_blinkCount / $_requiredBlinkCount'))
+                              : (isDetected
+                                    ? 'Mencocokkan wajah...'
+                                    : (isScanning
+                                          ? (!widget.enableLiveness
+                                                ? 'Tahan wajah tetap stabil'
+                                                : _livenessPassed
+                                                ? 'Liveness OK'
+                                                : (_blinkCount == 0
+                                                      ? 'Kedipkan mata'
+                                                      : 'Kedipan: $_blinkCount / $_requiredBlinkCount'))
+                                          : widget.hint)),
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: _livenessPassed
+                                ? AppColors.success
+                                : Colors.white,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                       ],
@@ -1095,71 +1195,8 @@ class CameraFaceViewState extends State<CameraFaceView>
                   ),
                 ),
               ),
-            Positioned(
-              bottom: MediaQuery.of(context).padding.bottom + 14,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.55),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        widget.liveMode
-                            ? (_livenessPassed
-                                  ? Icons.verified_user_rounded
-                                  : Icons.face_retouching_natural_rounded)
-                            : (isScanning
-                                  ? Icons.search_rounded
-                                  : Icons.info_outline_rounded),
-                        size: 13,
-                        color: _livenessPassed
-                            ? AppColors.success
-                            : Colors.white70,
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        widget.liveMode
-                            ? (!widget.enableLiveness
-                                  ? 'Arahkan wajah'
-                                  : _livenessPassed
-                                  ? 'Liveness OK'
-                                  : (_blinkCount == 0
-                                        ? 'Kedipkan mata'
-                                        : 'Kedipan: $_blinkCount / $_requiredBlinkCount'))
-                            : (isDetected
-                                  ? 'Mencocokkan wajah...'
-                                  : (isScanning
-                                        ? (!widget.enableLiveness
-                                              ? 'Tahan wajah tetap stabil'
-                                              : _livenessPassed
-                                              ? 'Liveness OK'
-                                              : (_blinkCount == 0
-                                                    ? 'Kedipkan mata'
-                                                    : 'Kedipan: $_blinkCount / $_requiredBlinkCount'))
-                                        : widget.hint)),
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: _livenessPassed
-                              ? AppColors.success
-                              : Colors.white,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
+            ],
+          ),
         );
     }
   }
@@ -1173,7 +1210,7 @@ class CameraFaceViewState extends State<CameraFaceView>
 }
 
 class _SampledFrame {
-  final img.Image fullImage;
+  final img.Image? fullImage;
   final InputImage inputImage;
   final Uint8List? nv21Bytes;
   final int rawWidth;

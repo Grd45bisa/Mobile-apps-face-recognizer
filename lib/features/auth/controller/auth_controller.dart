@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../shared/services/auth_service.dart';
+import '../../../shared/services/profile_service.dart';
 import '../../../shared/services/supabase_client.dart';
 
 enum AuthStatus { idle, loading, success, error }
@@ -27,27 +28,22 @@ class AuthController extends ChangeNotifier {
     _set(AuthStatus.loading);
     try {
       await AuthService.instance.signIn(email: email, password: password);
-      final userId = AuthService.instance.currentUserId;
-      final profile = await SupabaseClientService.client
-          .from('profiles')
-          .select('role')
-          .eq('id', userId ?? '')
-          .maybeSingle();
-      final role = profile?['role'] as String?;
-      if (role != 'admin') {
+
+      final user = AuthService.instance.currentUser;
+      if (user == null) {
         await AuthService.instance.signOut();
-        _set(
-          AuthStatus.error,
-          'Email dan password hanya untuk admin. Karyawan wajib masuk dengan QR Code dari admin.',
-        );
+        _set(AuthStatus.error, 'Sesi login tidak valid. Silakan coba lagi.');
         return false;
       }
+
+      await ProfileService.instance.ensureProfileExists(user);
       _set(AuthStatus.success);
       return true;
     } on AuthException catch (e) {
       _set(AuthStatus.error, _mapAuthError(e.message));
       return false;
     } catch (_) {
+      await AuthService.instance.signOut();
       _set(AuthStatus.error, 'Tidak dapat terhubung. Periksa koneksi Anda.');
       return false;
     }

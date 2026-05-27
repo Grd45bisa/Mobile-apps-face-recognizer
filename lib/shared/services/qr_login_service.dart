@@ -20,7 +20,7 @@ class QrLoginService {
 
   static const _defaultBaseUrl = String.fromEnvironment(
     'PRESENSIA_API_BASE_URL',
-    defaultValue: 'http://10.0.2.2:3000',
+    defaultValue: 'http://10.0.2.2:5000',
   );
 
   Future<void> loginWithQrPayload(String payload) async {

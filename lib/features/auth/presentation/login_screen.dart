@@ -253,8 +253,8 @@ class _LoginScreenState extends State<LoginScreen> {
                   );
                 },
                 child: _showAdminLogin
-                  ? _buildAdminLoginState(keyboardOpen: keyboardOpen)
-                  : _buildEmployeeLoginState(),
+                    ? _buildAdminLoginState(keyboardOpen: keyboardOpen)
+                    : _buildEmployeeLoginState(),
               ),
             ),
           ),
@@ -280,7 +280,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
         const SizedBox(height: 8),
         const Text(
-          'Karyawan masuk dengan QR dari admin.',
+          'Masuk dengan QR atau email yang terdaftar.',
           textAlign: TextAlign.center,
           style: TextStyle(
             fontSize: 13,
@@ -325,7 +325,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
                 const Expanded(
                   child: Text(
-                    'Login Admin',
+                    'Login Email',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 20,
@@ -378,7 +378,9 @@ class _LoginScreenState extends State<LoginScreen> {
                       borderRadius: BorderRadius.circular(16),
                     ),
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 24, vertical: 14),
+                      horizontal: 24,
+                      vertical: 14,
+                    ),
                   ),
                   child: _controller.isLoading
                       ? const SizedBox(
