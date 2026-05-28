@@ -9,6 +9,7 @@ import 'package:image/image.dart' as img;
 import '../../../shared/models/app_models.dart';
 import '../../../shared/providers/notification_provider.dart';
 import '../../../shared/services/attendance_dev_settings.dart';
+import '../../../shared/services/attendance_schedule_service.dart';
 import '../../../shared/services/attendance_service.dart';
 import '../../../shared/services/auth_service.dart';
 import '../../../shared/services/face/embedding_sync_service.dart';
@@ -51,6 +52,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   _StoredMatch? _bestVerificationMatch;
   String? _cachedEmbeddingUid;
   List<List<double>>? _cachedEmbeddings;
+  AttendanceScheduleConfig? _scheduleConfig;
+  WorkShift? _selectedShift;
+  ScheduleValidationResult? _pendingScheduleValidation;
+  bool _scheduleLoading = true;
+  String? _scheduleMessage;
 
   DateTime get _today =>
       DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
@@ -63,7 +69,27 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   void initState() {
     super.initState();
     _checkEnrollmentStatus();
+    _loadScheduleConfig();
     unawaited(FaceRecognitionService.instance.init());
+  }
+
+  Future<void> _loadScheduleConfig() async {
+    try {
+      final config = await AttendanceScheduleService.instance.fetchConfig();
+      if (!mounted) return;
+      setState(() {
+        _scheduleConfig = config;
+        _selectedShift = config.shifts.isNotEmpty ? config.shifts.first : null;
+        _scheduleLoading = false;
+        _scheduleMessage = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _scheduleLoading = false;
+        _scheduleMessage = 'Gagal memuat aturan jam kerja.';
+      });
+    }
   }
 
   Future<void> _checkEnrollmentStatus() async {
@@ -95,6 +121,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
               children: [
+                _buildScheduleCard(),
+                const SizedBox(height: 14),
                 _buildCameraArea(),
                 const SizedBox(height: 14),
                 _buildFaceStatus(),
@@ -342,6 +370,163 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     );
   }
 
+  Widget _buildScheduleCard() {
+    final config = _scheduleConfig;
+    if (_scheduleLoading) {
+      return _scheduleShell(
+        icon: Icons.schedule_rounded,
+        title: 'Memuat aturan jam kerja...',
+        subtitle: 'Mengambil pengaturan dari dashboard admin.',
+        color: AppColors.primary,
+        child: const LinearProgressIndicator(minHeight: 2),
+      );
+    }
+
+    if (_scheduleMessage != null) {
+      return _scheduleShell(
+        icon: Icons.warning_amber_rounded,
+        title: 'Aturan jam belum terbaca',
+        subtitle: _scheduleMessage!,
+        color: AppColors.warning,
+        child: TextButton(
+          onPressed: _loadScheduleConfig,
+          child: const Text('Coba muat ulang'),
+        ),
+      );
+    }
+
+    if (config == null ||
+        !config.scheduleEnabled ||
+        config.scheduleMode == 'free') {
+      return _scheduleShell(
+        icon: Icons.all_inclusive_rounded,
+        title: 'Jam presensi bebas',
+        subtitle: 'Dashboard admin tidak mengaktifkan batas jam kerja.',
+        color: AppColors.textSecondary,
+      );
+    }
+
+    if (config.scheduleMode == 'shift') {
+      return _scheduleShell(
+        icon: Icons.work_history_rounded,
+        title: 'Shift kerja hari ini',
+        subtitle: _isCheckedIn
+            ? 'Shift terkunci setelah check-in.'
+            : 'Pilih shift sebelum mulai presensi.',
+        color: AppColors.primary,
+        child: DropdownButtonFormField<String>(
+          initialValue: _selectedShift?.id,
+          isExpanded: true,
+          decoration: InputDecoration(
+            isDense: true,
+            filled: true,
+            fillColor: AppColors.background,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+          ),
+          items: config.shifts
+              .map(
+                (shift) => DropdownMenuItem(
+                  value: shift.id,
+                  child: Text(
+                    '${shift.name} (${shift.checkInStart}-${shift.checkOutEnd})',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              )
+              .toList(),
+          onChanged: _isCheckedIn
+              ? null
+              : (value) {
+                  setState(() {
+                    _selectedShift = config.shifts.firstWhere(
+                      (shift) => shift.id == value,
+                      orElse: () => config.shifts.first,
+                    );
+                  });
+                },
+        ),
+      );
+    }
+
+    return _scheduleShell(
+      icon: Icons.access_time_filled_rounded,
+      title: 'Jam kantor aktif',
+      subtitle:
+          'Masuk ${config.officeCheckInStart}-${config.officeCheckInEnd}, telat setelah ${config.officeLateAfter}. Pulang normal mulai ${config.officeCheckOutStart}.',
+      color: AppColors.primary,
+    );
+  }
+
+  Widget _scheduleShell({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required Color color,
+    Widget? child,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.border),
+        boxShadow: _softShadow(),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(icon, color: color, size: 20),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontWeight: FontWeight.w500,
+                        fontSize: 11,
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (child != null) ...[const SizedBox(height: 12), child],
+        ],
+      ),
+    );
+  }
+
   Widget _buildCameraArea() {
     final requireBlink = _devSettings.requireBlinkForAttendance;
     return Container(
@@ -540,7 +725,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       if (!confirmed) return;
     }
 
+    final validation = await _validateScheduleBeforeScan();
+    if (validation == null) return;
+
     setState(() {
+      _pendingScheduleValidation = validation;
       _checkingFace = true;
       _faceMatched = false;
       _matchFailed = false;
@@ -557,6 +746,62 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         success: false,
         message: 'Kamera belum siap. Coba lagi sebentar.',
       );
+    }
+  }
+
+  Future<ScheduleValidationResult?> _validateScheduleBeforeScan() async {
+    final config = _scheduleConfig;
+    if (_scheduleLoading) {
+      _showResult(success: false, message: 'Aturan jam kerja masih dimuat.');
+      return null;
+    }
+
+    if (config?.requiresShift == true &&
+        !_isCheckedIn &&
+        _selectedShift == null) {
+      _showResult(
+        success: false,
+        message: 'Pilih shift kerja terlebih dahulu.',
+      );
+      return null;
+    }
+
+    try {
+      final validation = await AttendanceScheduleService.instance.validate(
+        action: _isCheckedIn ? 'check-out' : 'check-in',
+        shiftId: _isCheckedIn
+            ? (_todayRecord?.selectedShiftId ?? _selectedShift?.id)
+            : _selectedShift?.id,
+      );
+
+      if (!validation.allowed) {
+        _showResult(success: false, message: validation.message);
+        return null;
+      }
+
+      if (validation.scheduleStatus == 'early_leave') {
+        final confirmed = await _confirmEarlyCheckout(validation.message);
+        if (!confirmed) return null;
+      }
+
+      if (validation.scheduleStatus == 'checkout_late_prompt') {
+        final reason = await _askCheckoutReason();
+        if (reason == null) return null;
+        return ScheduleValidationResult(
+          allowed: validation.allowed,
+          scheduleMode: validation.scheduleMode,
+          scheduleStatus: validation.scheduleStatus,
+          lateMinutes: validation.lateMinutes,
+          requiresCheckoutReason: validation.requiresCheckoutReason,
+          message: reason,
+          selectedShiftId: validation.selectedShiftId,
+        );
+      }
+
+      return validation;
+    } catch (e) {
+      _showResult(success: false, message: 'Gagal validasi jadwal: $e');
+      return null;
     }
   }
 
@@ -722,6 +967,59 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     return result ?? false;
   }
 
+  Future<bool> _confirmEarlyCheckout(String message) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Pulang lebih awal?'),
+        content: Text(
+          message.isEmpty
+              ? 'Check-out ini akan ditandai sebagai pulang duluan.'
+              : message,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Batal'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Lanjut Check-Out'),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
+
+  Future<String?> _askCheckoutReason() async {
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Check-out lewat jam normal'),
+        content: const Text(
+          'Pilih alasan agar laporan admin bisa membedakan lembur atau lupa absen pulang.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Batal'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'forgot_checkout'),
+            child: const Text('Lupa absen pulang'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, 'overtime'),
+            child: const Text('Lembur'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _manualCheckInOrOut({
     AttendanceSource source = AttendanceSource.manual,
     img.Image? evidenceImage,
@@ -747,6 +1045,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           evidenceImage: evidenceImage,
           faceSimilarity: faceSimilarity,
           faceThreshold: _faceMatchThreshold,
+          scheduleValidation: _pendingScheduleValidation,
+          selectedShiftId: _selectedShift?.id,
         );
         if (!mounted) return;
         _store.setAttendance(record);
@@ -764,6 +1064,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           evidenceImage: evidenceImage,
           faceSimilarity: faceSimilarity,
           faceThreshold: _faceMatchThreshold,
+          scheduleValidation: _pendingScheduleValidation,
+          selectedShiftId: _todayRecord?.selectedShiftId ?? _selectedShift?.id,
+          checkoutReason:
+              _pendingScheduleValidation?.scheduleStatus ==
+                  'checkout_late_prompt'
+              ? _pendingScheduleValidation?.message
+              : null,
         );
         if (!mounted) return;
         _store.setAttendance(record);

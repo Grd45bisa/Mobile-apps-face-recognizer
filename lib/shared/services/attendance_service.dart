@@ -5,6 +5,7 @@ import 'package:image/image.dart' as img;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import '../models/app_models.dart';
+import 'attendance_schedule_service.dart';
 import 'supabase_client.dart';
 
 class AttendanceService {
@@ -89,6 +90,8 @@ class AttendanceService {
     img.Image? evidenceImage,
     double? faceSimilarity,
     double? faceThreshold,
+    ScheduleValidationResult? scheduleValidation,
+    String? selectedShiftId,
   }) async {
     final now = DateTime.now();
     final record = AttendanceRecord(
@@ -103,6 +106,7 @@ class AttendanceService {
     final payload = record.toJson(employeeId: employeeId);
     // Use DB server time for check_in to avoid clock drift
     payload['check_in'] = now.toUtc().toIso8601String();
+    payload.addAll(_schedulePayload(scheduleValidation, selectedShiftId));
     payload.addAll(
       await _buildEvidencePayload(
         employeeId: employeeId,
@@ -126,6 +130,10 @@ class AttendanceService {
     img.Image? evidenceImage,
     double? faceSimilarity,
     double? faceThreshold,
+    ScheduleValidationResult? scheduleValidation,
+    String? selectedShiftId,
+    String? checkoutReason,
+    String? checkoutNote,
   }) async {
     final now = DateTime.now();
     final today = _dateStr(now);
@@ -136,19 +144,50 @@ class AttendanceService {
       faceSimilarity: faceSimilarity,
       faceThreshold: faceThreshold,
     );
+    final updatePayload = <String, dynamic>{
+      'check_out': now.toUtc().toIso8601String(),
+      'updated_at': now.toUtc().toIso8601String(),
+      ..._checkoutSchedulePayload(scheduleValidation, selectedShiftId),
+      ...evidencePayload,
+    };
+    if (checkoutReason != null) {
+      updatePayload['checkout_reason'] = checkoutReason;
+    }
+    if (checkoutNote != null) {
+      updatePayload['checkout_note'] = checkoutNote;
+    }
 
     final updated = await _db
         .from('attendance_records')
-        .update({
-          'check_out': now.toUtc().toIso8601String(),
-          'updated_at': now.toUtc().toIso8601String(),
-          ...evidencePayload,
-        })
+        .update(updatePayload)
         .eq('employee_id', employeeId)
         .eq('date', today)
         .select()
         .single();
     return AttendanceRecord.fromJson(updated);
+  }
+
+  Map<String, dynamic> _schedulePayload(
+    ScheduleValidationResult? validation,
+    String? selectedShiftId,
+  ) {
+    if (validation == null) return {};
+    return {
+      'schedule_mode': validation.scheduleMode,
+      'schedule_status': validation.scheduleStatus,
+      'late_minutes': validation.lateMinutes,
+      'selected_shift_id': selectedShiftId ?? validation.selectedShiftId,
+    };
+  }
+
+  Map<String, dynamic> _checkoutSchedulePayload(
+    ScheduleValidationResult? validation,
+    String? selectedShiftId,
+  ) {
+    if (validation == null || validation.scheduleStatus == 'present') {
+      return {};
+    }
+    return _schedulePayload(validation, selectedShiftId);
   }
 
   Future<AttendanceRecord> checkInWithFaceNonce(

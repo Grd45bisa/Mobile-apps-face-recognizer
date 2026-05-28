@@ -44,6 +44,12 @@ class AttendanceRecord {
   final String? note;
   final String? nonce;
   final DateTime? nonceUsedAt;
+  final String? scheduleMode;
+  final String? selectedShiftId;
+  final String? scheduleStatus;
+  final int? lateMinutes;
+  final String? checkoutReason;
+  final String? checkoutNote;
 
   const AttendanceRecord({
     required this.id,
@@ -55,6 +61,12 @@ class AttendanceRecord {
     this.note,
     this.nonce,
     this.nonceUsedAt,
+    this.scheduleMode,
+    this.selectedShiftId,
+    this.scheduleStatus,
+    this.lateMinutes,
+    this.checkoutReason,
+    this.checkoutNote,
   });
 
   AttendanceRecord copyWith({
@@ -67,6 +79,12 @@ class AttendanceRecord {
     String? note,
     String? nonce,
     DateTime? nonceUsedAt,
+    String? scheduleMode,
+    String? selectedShiftId,
+    String? scheduleStatus,
+    int? lateMinutes,
+    String? checkoutReason,
+    String? checkoutNote,
     bool clearCheckOut = false,
   }) => AttendanceRecord(
     id: id ?? this.id,
@@ -78,6 +96,12 @@ class AttendanceRecord {
     note: note ?? this.note,
     nonce: nonce ?? this.nonce,
     nonceUsedAt: nonceUsedAt ?? this.nonceUsedAt,
+    scheduleMode: scheduleMode ?? this.scheduleMode,
+    selectedShiftId: selectedShiftId ?? this.selectedShiftId,
+    scheduleStatus: scheduleStatus ?? this.scheduleStatus,
+    lateMinutes: lateMinutes ?? this.lateMinutes,
+    checkoutReason: checkoutReason ?? this.checkoutReason,
+    checkoutNote: checkoutNote ?? this.checkoutNote,
   );
 
   factory AttendanceRecord.fromJson(Map<String, dynamic> json) {
@@ -110,6 +134,12 @@ class AttendanceRecord {
       nonceUsedAt: json['nonce_used_at'] != null
           ? DateTime.parse(json['nonce_used_at'] as String)
           : null,
+      scheduleMode: json['schedule_mode'] as String?,
+      selectedShiftId: json['selected_shift_id'] as String?,
+      scheduleStatus: json['schedule_status'] as String?,
+      lateMinutes: (json['late_minutes'] as num?)?.round(),
+      checkoutReason: json['checkout_reason'] as String?,
+      checkoutNote: json['checkout_note'] as String?,
     );
   }
 
@@ -132,6 +162,12 @@ class AttendanceRecord {
       'note': note,
       'nonce': nonce,
       'nonce_used_at': nonceUsedAt?.toUtc().toIso8601String(),
+      'schedule_mode': scheduleMode,
+      'selected_shift_id': selectedShiftId,
+      'schedule_status': scheduleStatus,
+      'late_minutes': lateMinutes,
+      'checkout_reason': checkoutReason,
+      'checkout_note': checkoutNote,
     };
   }
 
